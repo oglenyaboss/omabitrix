@@ -16,7 +16,7 @@ func withPortal(m Model) Model {
 
 func TestBrowserURL(t *testing.T) {
 	chats := []Chat{{DialogID: "chat1", Title: "А"}, {DialogID: "chat2", Title: "Б"}}
-	tasks := []Task{{ID: 5, Title: "x"}}
+	tasks := []Task{{ID: 5, Title: "x", Role: "do"}}
 	notify := []NotifyItem{{ID: "n1", TaskID: 15947}, {ID: "n2", TaskID: 0}}
 	taskURL := func(id int) string {
 		return browserTestPortal + "/company/personal/user/7/tasks/task/view/" + strconv.Itoa(id) + "/"

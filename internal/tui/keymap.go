@@ -38,6 +38,12 @@ type keyMap struct {
 	Status     key.Binding // s
 	Deadline   key.Binding // d
 	TaskChat   key.Binding // c
+	ColLeft    key.Binding // h, left — колонка влево
+	ColRight   key.Binding // l, right — колонка вправо
+	MoveLeft   key.Binding // H — стадию назад
+	MoveRight  key.Binding // L — стадию вперёд
+	Role       key.Binding // t — роль доски
+	Project    key.Binding // p — проект доски
 	ReadAll    key.Binding // A
 	Browser    key.Binding // o
 	Comment    key.Binding // r на карточке задачи
@@ -176,6 +182,30 @@ var km = keyMap{
 		key.WithKeys("c"),
 		key.WithHelp("c", "чат задачи"),
 	),
+	ColLeft: key.NewBinding(
+		key.WithKeys("h", "left"),
+		key.WithHelp("h/l", "стадия"),
+	),
+	ColRight: key.NewBinding(
+		key.WithKeys("l", "right"),
+		key.WithHelp("l", "стадия"),
+	),
+	MoveLeft: key.NewBinding(
+		key.WithKeys("H"),
+		key.WithHelp("H/L", "перенести"),
+	),
+	MoveRight: key.NewBinding(
+		key.WithKeys("L"),
+		key.WithHelp("L", "перенести"),
+	),
+	Role: key.NewBinding(
+		key.WithKeys("t"),
+		key.WithHelp("t", "роль"),
+	),
+	Project: key.NewBinding(
+		key.WithKeys("p"),
+		key.WithHelp("p", "проект"),
+	),
 	Browser: key.NewBinding(
 		key.WithKeys("o"),
 		key.WithHelp("o", "в браузере"),
@@ -208,7 +238,7 @@ func (m Model) shortHelp() []key.Binding {
 		}
 		return append(b, km.Browser, km.Quit, km.Help)
 	case m.tab == tabTasks:
-		return []key.Binding{km.Open, km.Refresh, km.Help}
+		return []key.Binding{km.ColLeft, km.Down, km.MoveLeft, km.Open, km.Role, km.Project, km.Filter, km.Help}
 	case m.tab == tabNotify:
 		return []key.Binding{km.Open, km.ReadAll, km.Refresh, km.Help}
 	case m.tab == tabHome:
@@ -228,7 +258,7 @@ func (m Model) fullHelp() [][]key.Binding {
 		// чаты (r — ответить, на выделенном — с цитатой)
 		{km.Select, km.ReplyQuote, km.Edit, km.Delete, km.Like, km.Mention, km.Send, km.Cancel, km.Older, km.Search},
 		// задачи
-		{km.Status, km.Deadline, km.TaskChat, km.Comment},
+		{km.Status, km.Deadline, km.TaskChat, km.Comment, km.ColLeft, km.ColRight, km.MoveLeft, km.MoveRight, km.Role, km.Project},
 		// уведы
 		{km.ReadAll},
 		// общее

@@ -88,7 +88,9 @@ type Model struct {
 	mentions map[string]int64 // имена, вставленные по «@»: имя → id автора
 	msgLine  map[int64]int    // стартовая строка сообщения в рендере истории
 
-	taskIdx     int // выбранная задача в плоском списке
+	taskIdx     int    // выбранная задача в плоском списке
+	taskRole    string // роль доски: do | help | watch (пусто — do)
+	taskProject int64  // фильтр доски по проекту; 0 — все
 	taskCard    Task
 	taskOpen    bool
 	cardReq     int64 // последний запрошенный id — защита от гонки ответов
@@ -426,6 +428,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.loadCmd("tasks")
 
+	case stageMsg:
+		// перенос стадии: при ошибке перечитка вернёт задачу в прежнюю стадию
+		if msg.err != nil {
+			m.loadErr = "стадия не изменена: " + msg.err.Error()
+		}
+		return m, m.loadCmd("tasks")
+
 	case actionMsg:
 		if msg.what == "правка" {
 			m.sending = false // флаг ставит только отправка правки
@@ -459,6 +468,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.taskCard = msg.task
+		// tasks.task.get поля канбана не отдаёт — переносим из списка
+		for i := range m.tasks {
+			if m.tasks[i].ID == msg.task.ID {
+				m.taskCard.Role = m.tasks[i].Role
+				m.taskCard.GroupID = m.tasks[i].GroupID
+				m.taskCard.Project = m.tasks[i].Project
+				m.taskCard.StageID = m.tasks[i].StageID
+				m.taskCard.Stage = m.tasks[i].Stage
+				m.taskCard.StageColor = m.tasks[i].StageColor
+				m.taskCard.StageSort = m.tasks[i].StageSort
+				break
+			}
+		}
 		m.taskOpen = true
 		m.tab = tabTasks
 		m.cursor = m.taskIdx
@@ -540,7 +562,7 @@ func (m *Model) layout() {
 	if m.dialW < 20 {
 		m.dialW = 20
 	}
-	m.cardW = m.width - (m.listW + 4) - 2 - 4
+	m.cardW = m.width - 4 // вкладка задач: карточка на всю ширину доски
 	if m.cardW < 20 {
 		m.cardW = 20
 	}
@@ -894,7 +916,7 @@ func (m Model) mouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// mouseLeft: геометрия строк синхронна с chatWindow/taskWindow/notifyWindow.
+// mouseLeft: геометрия строк синхронна с chatWindow/notifyWindow.
 func (m Model) mouseLeft(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 	switch m.tab {
 	case tabChats:
@@ -915,18 +937,8 @@ func (m Model) mouseLeft(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case tabTasks:
-		// гейт как в чатах: клик по карточке — не список
-		if m.taskOpen && msg.X > m.listW+4 {
-			return m, nil
-		}
-		rows := m.flatTasks()
-		_, _, lineMap := m.taskWindow(rows)
-		idx := msg.Y - 2 - m.filterRows()
-		if idx < 0 || idx >= len(lineMap) || lineMap[idx] < 0 {
-			return m, nil
-		}
-		m.cursor = lineMap[idx]
-		return m.enterKey()
+		// доска рисуется колонками, мышь юзеру не нужна
+		return m, nil
 	case tabNotify:
 		vn := m.visibleNotify()
 		start, _ := m.notifyWindow(len(vn))
@@ -972,40 +984,16 @@ func (m *Model) visibleCount() int {
 
 type taskRow struct {
 	task Task
-	kind string // overdue/today/later/nodate/help/watch
+	kind string // overdue/today/later/nodate
+	col  int    // индекс колонки доски
 }
 
+// flatTasks — строки доски колонка за колонкой (порядок boardColumns).
 func (m *Model) flatTasks() []taskRow {
+	cols := m.boardColumns()
 	out := make([]taskRow, 0, len(m.tasks))
-	for _, t := range m.buckets.Overdue {
-		out = append(out, taskRow{t, "overdue"})
-	}
-	for _, t := range m.buckets.Today {
-		out = append(out, taskRow{t, "today"})
-	}
-	for _, t := range m.buckets.Later {
-		out = append(out, taskRow{t, "later"})
-	}
-	for _, t := range m.buckets.NoDate {
-		out = append(out, taskRow{t, "nodate"})
-	}
-	for _, t := range m.buckets.Help {
-		out = append(out, taskRow{t, "help"})
-	}
-	for _, t := range m.buckets.Watch {
-		out = append(out, taskRow{t, "watch"})
-	}
-	if m.tab == tabTasks && m.filter != "" {
-		// фильтр по титулу как в чатах; пустые корзины просто исчезают —
-		// заголовок секции рисуется только перед её задачами
-		f := strings.ToLower(m.filter)
-		kept := make([]taskRow, 0, len(out))
-		for _, r := range out {
-			if strings.Contains(strings.ToLower(r.task.Title), f) {
-				kept = append(kept, r)
-			}
-		}
-		out = kept
+	for _, c := range cols {
+		out = append(out, c.rows...)
 	}
 	return out
 }

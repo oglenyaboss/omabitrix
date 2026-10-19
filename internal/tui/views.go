@@ -373,138 +373,13 @@ func searchHighlight(text, q string) string {
 	return string(r[:ri]) + stAccent.Render(string(r[ri:ri+rq])) + string(r[ri+rq:])
 }
 
-// ---- задачи: список (или список + карточка правой панелью)
+// ---- задачи: канбан-доска (или карточка на всю ширину)
 
 func (m Model) viewTasks() string {
-	list := m.taskListPane()
 	if !m.taskOpen {
-		return list
+		return m.viewBoard()
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, list, "  ", m.taskCardPane())
-}
-
-func (m Model) taskListPane() string {
-	rows := m.flatTasks()
-	start, end, _ := m.taskWindow(rows)
-	out := make([]string, 0, (end-start)*2+4)
-	if m.filterRows() > 0 {
-		out = append(out, m.filterLine()...)
-	}
-	var lastKind string
-	for i := start; i < end; i++ {
-		if rows[i].kind != lastKind {
-			out = append(out, sectionHeader(rows[i].kind, m.buckets, m.taskListW()))
-			lastKind = rows[i].kind
-		}
-		out = append(out, m.taskRows(rows[i], i == m.cursor)...)
-	}
-	if len(rows) == 0 {
-		out = append(out, stDim.Render(" — открытых задач нет — "))
-	}
-	title := paneTitle("", "задачи", unreadExtra(len(m.buckets.Overdue)), m.tab == tabTasks)
-	return box(title, out, m.taskListW(), m.tab == tabTasks)
-}
-
-func (m Model) taskListW() int {
-	if m.taskOpen {
-		return m.listW
-	}
-	return m.width - 4
-}
-
-// taskRows — две строки на задачу: титул (+ бейдж новых комментариев справа);
-// дедлайн dim.
-func (m Model) taskRows(r taskRow, selected bool) []string {
-	inner := m.taskListW()
-	marker := " "
-	if selected {
-		marker = stCursor.Render("▌")
-	}
-	var badgeStr string
-	if r.task.NewComments > 0 {
-		badgeStr = stBadge.Render(fmt.Sprint(r.task.NewComments))
-	}
-	tw := inner - 2 // маркер и отступ перед титулом
-	if badgeStr != "" {
-		tw -= lipgloss.Width(badgeStr) + 1 // бейдж и зазор до него
-	}
-	title := r.task.Title
-	if r.kind == "overdue" {
-		title = stUrgent.Render(truncate(title, tw))
-	} else {
-		title = truncate(title, tw)
-	}
-	line1 := marker + " " + title
-	if badgeStr != "" {
-		gap := inner - 2 - lipgloss.Width(title) - lipgloss.Width(badgeStr)
-		if gap < 1 {
-			gap = 1
-		}
-		line1 += strings.Repeat(" ", gap) + badgeStr
-	}
-	line2 := ""
-	if r.task.Deadline != "" {
-		line2 = stDim.Render("     󰔞 " + deadlineShort(r.task.Deadline))
-	}
-	return []string{line1, line2}
-}
-
-// taskWindow — окно видимых задач и карта строк (индекс задачи или -1 = секция).
-// Высоты: заголовок секции 1 строка, задача 2 строки; единая точка для рендера и мыши.
-func (m Model) taskWindow(rows []taskRow) (start, end int, lineMap []int) {
-	total := m.bodyH - 2 - m.filterRows()
-	if total < 3 {
-		total = 3
-	}
-	secHeight := func(from, to int) int {
-		h := 0
-		last := ""
-		for i := from; i < to; i++ {
-			if rows[i].kind != last {
-				h++
-				last = rows[i].kind
-			}
-			h += 2
-		}
-		return h
-	}
-	start = 0
-	for start < len(rows) && secHeight(start, m.cursor+1) > total {
-		start++
-	}
-	end = start
-	for end < len(rows) && secHeight(start, end+1) <= total {
-		end++
-	}
-	lineMap = make([]int, 0, (end-start)*2+4)
-	last := ""
-	for i := start; i < end; i++ {
-		if rows[i].kind != last {
-			lineMap = append(lineMap, -1)
-			last = rows[i].kind
-		}
-		lineMap = append(lineMap, i, i)
-	}
-	return start, end, lineMap
-}
-
-func sectionHeader(kind string, b TaskBuckets, w int) string {
-	var s string
-	switch kind {
-	case "overdue":
-		s = stUrgent.Bold(true).Render(fmt.Sprintf("ПРОСРОЧЕНО · %d", len(b.Overdue)))
-	case "today":
-		s = stBold.Render(fmt.Sprintf("СЕГОДНЯ · %d", len(b.Today)))
-	case "later":
-		s = stBoldDim.Render("ПОЗЖЕ")
-	case "help":
-		s = stBoldDim.Render(fmt.Sprintf("ПОМОГАЮ · %d", len(b.Help)))
-	case "watch":
-		s = stBoldDim.Render(fmt.Sprintf("НАБЛЮДАЮ · %d", len(b.Watch)))
-	default:
-		s = stBoldDim.Render("БЕЗ ДЕДЛАЙНА")
-	}
-	return dayDivider(s, w)
+	return m.taskCardPane()
 }
 
 func deadlineShort(dl string) string {
@@ -556,6 +431,12 @@ func (m Model) taskCardPane() string {
 	}
 	if t.Deadline != "" {
 		meta = append(meta, "󰔞 "+deadlineShort(t.Deadline))
+	}
+	if t.Project != "" {
+		meta = append(meta, t.Project)
+	}
+	if t.Stage != "" {
+		meta = append(meta, t.Stage)
 	}
 	meta = append(meta, "статус: "+statusName(t.Status))
 	lines = append(lines, stDim.Render("  "+strings.Join(meta, "  ·  ")), "")
