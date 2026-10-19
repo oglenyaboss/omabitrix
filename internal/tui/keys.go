@@ -3,20 +3,20 @@ package tui
 import (
 	"fmt"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 // keys — единая точка хоткеев. q/esc идут «наружу» по стеку режимов.
-func (m Model) keys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// оверлеи перехватывают всё
 	switch m.overlay {
 	case ovHelp:
-		if msg.Type == tea.KeyEsc || msg.Type == tea.KeyEnter || msg.String() == "?" {
+		if msg.Code == tea.KeyEsc || msg.Code == tea.KeyEnter || msg.String() == "?" {
 			m.overlay = ovNone
 		}
 		return m, nil
 	case ovStatus:
-		switch msg.Type {
+		switch msg.Code {
 		case tea.KeyEsc:
 			m.overlay = ovNone
 			return m, nil
@@ -35,7 +35,7 @@ func (m Model) keys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case ovDeadline:
 		opts := deadlineOptions(m.api.now(), m.taskCard.Deadline)
-		switch msg.Type {
+		switch msg.Code {
 		case tea.KeyEsc:
 			m.overlay = ovNone
 			return m, nil
@@ -72,21 +72,21 @@ func (m Model) keys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// вода ответа: всё уходит в textarea, кроме esc
 	if m.focus == focusReply {
-		switch msg.Type {
-		case tea.KeyEsc:
+		switch msg.String() {
+		case "esc":
 			if m.active != nil && m.reply.Value() != "" {
 				m.drafts[m.active.DialogID] = m.reply.Value()
 			}
 			m.focus = focusList
 			m.layout()
 			return m, nil
-		case tea.KeyCtrlC:
+		case "ctrl+c":
 			m.focus = focusList
 			return m, nil
 		}
 		var cmd tea.Cmd
 		m.reply, cmd = m.reply.Update(msg)
-		if msg.Type == tea.KeyEnter {
+		if msg.Code == tea.KeyEnter {
 			text := m.reply.Value()
 			if trimNonEmpty(text) && m.active != nil && !m.sending {
 				m.sending = true
@@ -98,7 +98,7 @@ func (m Model) keys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// фильтр: всё в input
 	if m.focus == focusFilter {
-		switch msg.Type {
+		switch msg.Code {
 		case tea.KeyEsc:
 			m.focus = focusList
 			m.filterIn.Blur()

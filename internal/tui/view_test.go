@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func viewModel(w, h int, chats []Chat, tasks []Task, notify []NotifyItem, active *Chat, msgs []Message) Model {
@@ -52,7 +53,7 @@ func TestViewFitsScreen(t *testing.T) {
 				}
 				m := viewModel(w, h, chats, tasks, notify, active, msgs)
 				m.tab = tabix
-				v := m.View()
+				v := m.View().Content
 				if got := lipgloss.Height(v); got > h {
 					t.Errorf("w=%d h=%d tab=%d: высота %d > %d\n%q", w, h, tabix, got, h, firstLines(v, 3))
 				}
@@ -88,10 +89,12 @@ func firstLines(s string, n int) string {
 	return strings.Join(parts, "\n")
 }
 
-var _ = tea.KeyMsg{}
-
+// keyPress — механический перевод v1-хелпера (KeyRunes+[]rune(key)):
+// клавиша, чьё String() равно key. Для «enter» это руны, а не спец-код
+// (как и в v1 — Type-свитчи оверлеев её не ловили).
 func keyPress(m Model, key string) (Model, tea.Cmd) {
-	mm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+	msg := tea.KeyPressMsg{Code: []rune(key)[0], Text: key}
+	mm, _ := m.Update(msg)
 	return mm.(Model), nil
 }
 
@@ -104,7 +107,7 @@ func TestStatusOverlayKeys(t *testing.T) {
 	if m2.overlay != ovStatus {
 		t.Fatalf("s не открыл меню: %v", m2.overlay)
 	}
-	v := m2.View()
+	v := m2.View().Content
 	if !strings.Contains(v, "в работе") {
 		t.Fatalf("меню статусов не в кадре:\n%s", v)
 	}
@@ -130,7 +133,7 @@ func TestDeadlineOverlayAndTaskChat(t *testing.T) {
 	if m2.overlay != ovDeadline {
 		t.Fatalf("d не открыл меню срока: %v", m2.overlay)
 	}
-	if v := m2.View(); !strings.Contains(v, "сегодня 18:00") || !strings.Contains(v, "снять дедлайн") {
+	if v := m2.View().Content; !strings.Contains(v, "сегодня 18:00") || !strings.Contains(v, "снять дедлайн") {
 		t.Fatalf("меню срока не в кадре")
 	}
 	m3, _ := keyPress(m2, "enter") // сегодня 18:00
@@ -162,7 +165,7 @@ func TestTaskCardClamp(t *testing.T) {
 	m.taskOpen = true
 	m.taskCard = Task{ID: 1, Title: "x", Status: "2", ChatID: 7, Description: long}
 	m.overlay = ovDeadline
-	v := m.View()
+	v := m.View().Content
 	if got := strings.Count(v, "\n") + 1; got > 36 {
 		t.Fatalf("View=%d строк при экране 36 — меню под фолдом", got)
 	}
@@ -180,24 +183,24 @@ func TestMouseClickGeometry(t *testing.T) {
 	m.tab = tabChats
 
 	// строка 0 — верхняя грань рамки, 1-2 — первый чат, 3-4 — второй
-	mm, _ := m.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 10, Y: 1})
+	mm, _ := m.Update(tea.MouseClickMsg{X: 10, Y: 1, Button: tea.MouseLeft})
 	m1 := mm.(Model)
 	if m1.cursor != 0 || m1.active == nil || m1.active.DialogID != "d0" {
 		t.Fatalf("клик по строке 1: cursor=%d active=%v", m1.cursor, m1.active)
 	}
 	// второй чат при открытом диалоге — переключение по клику
-	m2, _ := m1.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 10, Y: 3})
+	m2, _ := m1.Update(tea.MouseClickMsg{X: 10, Y: 3, Button: tea.MouseLeft})
 	m3 := m2.(Model)
 	if m3.active == nil || m3.active.DialogID != "d1" {
 		t.Fatalf("клик по строке 3 не переключил диалог: %+v", m3.active)
 	}
 	// вторая строка чата (превью) — тот же чат
-	m4, _ := m3.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 10, Y: 4})
+	m4, _ := m3.Update(tea.MouseClickMsg{X: 10, Y: 4, Button: tea.MouseLeft})
 	if got := m4.(Model).active.DialogID; got != "d1" {
 		t.Fatalf("клик по превью открыл %s, хочу d1", got)
 	}
 	// правее списка — ничего
-	m5, _ := m4.(Model).Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: m4.(Model).listW + 5, Y: 1})
+	m5, _ := m4.(Model).Update(tea.MouseClickMsg{X: m4.(Model).listW + 5, Y: 1, Button: tea.MouseLeft})
 	if got := m5.(Model).active.DialogID; got != "d1" {
 		t.Fatalf("клик мимо списка переключил на %s", got)
 	}
@@ -209,7 +212,7 @@ func TestMouseClickGeometry(t *testing.T) {
 	if len(vc) != 8 {
 		t.Fatalf("фильтр «чат» должен пропускать все: %d", len(vc))
 	}
-	m7, _ := m6.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 10, Y: 5})
+	m7, _ := m6.Update(tea.MouseClickMsg{X: 10, Y: 5, Button: tea.MouseLeft})
 	if got := m7.(Model).active.DialogID; got != "d1" {
 		t.Fatalf("клик с фильтром (Y=5 → второй чат): открылся %s", got)
 	}
@@ -228,13 +231,13 @@ func TestMouseWheel(t *testing.T) {
 	m.tab = tabChats
 	m.active = &chats[0]
 	// колесо над диалогом — скролл вниз
-	mm, _ := m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown, X: 100, Y: 10})
+	mm, _ := m.Update(tea.MouseWheelMsg{X: 100, Y: 10, Button: tea.MouseWheelDown})
 	m1 := mm.(Model)
-	if m1.vp.YOffset == 0 {
+	if m1.vp.YOffset() == 0 {
 		t.Fatal("колесо над диалогом не скроллит")
 	}
 	// колесо над списком — курсор
-	m2, _ := m1.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown, X: 5, Y: 10})
+	m2, _ := m1.Update(tea.MouseWheelMsg{X: 5, Y: 10, Button: tea.MouseWheelDown})
 	if got := m2.(Model).cursor; got != 1 {
 		t.Fatalf("колесо над списком: cursor=%d, хочу 1", got)
 	}
@@ -261,10 +264,12 @@ func TestHistoryGrouping(t *testing.T) {
 	}
 	// разделитель дня по центру: начинается и кончается тире (паддинг
 	// вьюпорта справа не считаем)
+	// v2 lipgloss Render всегда эмитит ANSI; в v1 тесты видели ASCII,
+	// снимаем коды, чтобы сравнивать сам разделитель
 	dayLine := ""
 	for _, l := range strings.Split(v, "\n") {
 		if strings.Contains(l, "сегодня") {
-			dayLine = strings.TrimRight(l, " ")
+			dayLine = strings.TrimRight(ansi.Strip(l), " ")
 			break
 		}
 	}
@@ -288,13 +293,13 @@ func TestMouseClickCardGateAndTabClamp(t *testing.T) {
 	m.taskCard = tasks[0]
 
 	// клик по правой панели (карточке) — не выбирает задачу
-	mm, _ := m.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: m.listW + 10, Y: 3})
+	mm, _ := m.Update(tea.MouseClickMsg{X: m.listW + 10, Y: 3, Button: tea.MouseLeft})
 	if got := mm.(Model).cursor; got != 0 {
 		t.Fatalf("клик по карточке сдвинул курсор на %d", got)
 	}
 	// клик по списку слева — выбирает (строка 4 = первая строка задачи 1:
 	// 0 — секция, 1-2 — задача 0, 3-4 — задача 1)
-	mm, _ = mm.(Model).Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 5, Y: 4})
+	mm, _ = mm.(Model).Update(tea.MouseClickMsg{X: 5, Y: 4, Button: tea.MouseLeft})
 	if got := mm.(Model).cursor; got != 1 {
 		t.Fatalf("клик по списку: cursor=%d, хочу 1", got)
 	}
@@ -302,7 +307,7 @@ func TestMouseClickCardGateAndTabClamp(t *testing.T) {
 	m2 := mm.(Model)
 	m2.tab = tabNotify
 	m2.cursor = 11
-	m3, _ := m2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
+	m3, _ := m2.Update(tea.KeyPressMsg{Code: '1', Text: "1"})
 	if got := m3.(Model).cursor; got != 0 {
 		t.Fatalf("переключение вкладки не клампит курсор: %d", got)
 	}

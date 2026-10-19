@@ -5,12 +5,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/muesli/reflow/wordwrap"
 )
 
@@ -319,8 +319,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cursor = m.taskIdx
 		return m, nil
 
-	case tea.MouseMsg:
+	case tea.MouseClickMsg:
 		return m.mouseClick(msg)
+
+	case tea.MouseWheelMsg:
+		return m.mouseWheel(msg)
 
 	case readAllMsg:
 		if msg.err != nil {
@@ -332,7 +335,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.flashAt = m.api.now()
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if !m.ready {
 			// «любая клавиша — пропустить»: входим с тем, что загрузилось,
 			// клавиша при этом применяется (не теряется)
@@ -373,19 +376,19 @@ func (m *Model) layout() {
 		m.bodyH = 6
 	}
 	// единственная точка правды ширины истории: минус колонка скроллбара
-	m.vp.Width = m.dialW - 2
+	m.vp.SetWidth(m.dialW - 2)
 	replyRows := 2 // пустая + подсказка «r — ответить»
 	if m.focus == focusReply {
 		replyRows = 3
 	}
-	m.vp.Height = m.bodyH - 2 - replyRows
-	if m.vp.Height < 2 {
-		m.vp.Height = 2
+	m.vp.SetHeight(m.bodyH - 2 - replyRows)
+	if m.vp.Height() < 2 {
+		m.vp.SetHeight(2)
 	}
 	m.reply.SetWidth(m.dialW - 4)
 	m.reply.SetHeight(3)
 	if m.focus == focusFilter {
-		m.filterIn.Width = m.listW - 6
+		m.filterIn.SetWidth(m.listW - 6)
 	}
 	m.renderHistory()
 }
@@ -517,26 +520,20 @@ func (m Model) readAllCmd() tea.Cmd {
 	return func() tea.Msg { return readAllMsg{err: api.ReadAllNotify(ctx)} }
 }
 
-// mouseClick — клик открывает элемент списка, колесо скроллит.
-func (m Model) mouseClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+// mouseClick — клик открывает элемент списка (колесо — отдельное событие).
+func (m Model) mouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 	if m.focus != focusList || m.overlay != ovNone {
 		return m, nil
 	}
-	switch msg.Button {
-	case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
-		return m.mouseWheel(msg)
-	case tea.MouseButtonLeft:
-		if msg.Action != tea.MouseActionPress {
-			return m, nil
-		}
+	if msg.Button == tea.MouseLeft {
 		return m.mouseLeft(msg)
 	}
 	return m, nil
 }
 
 // wheel: над диалогом — скролл истории, над списком — курсор.
-func (m Model) mouseWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	up := msg.Button == tea.MouseButtonWheelUp
+func (m Model) mouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
+	up := msg.Button == tea.MouseWheelUp
 	if m.active != nil && msg.X > m.listW+4 {
 		if up {
 			m.vp.ScrollUp(3)
@@ -558,7 +555,7 @@ func (m Model) mouseWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 }
 
 // mouseLeft: геометрия строк синхронна с chatWindow/taskWindow/notifyWindow.
-func (m Model) mouseLeft(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+func (m Model) mouseLeft(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 	switch m.tab {
 	case tabChats:
 		if msg.X > m.listW+4 {
@@ -711,10 +708,10 @@ func (m *Model) openHistory() {
 // потолок: prepend-догрузка может слить две серии одного автора на границе —
 // сдвиг скролла на 1–2 строки, приемлемо.
 func (m *Model) renderHistory() {
-	if m.vp.Width <= 0 {
+	if m.vp.Width() <= 0 {
 		return
 	}
-	W := m.vp.Width - 1
+	W := m.vp.Width() - 1
 	if W < 10 {
 		W = 10
 	}

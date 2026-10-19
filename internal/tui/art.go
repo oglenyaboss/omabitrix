@@ -3,7 +3,7 @@ package tui
 import (
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 // ANSI Shadow (neofetch-классика). 6 строк на букву, «omabitrix» — 71 колонка.

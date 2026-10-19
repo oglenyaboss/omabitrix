@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"omabitrix/internal/b24"
 	"omabitrix/internal/config"
@@ -43,7 +43,7 @@ func main() {
 		m.OpenTask(*taskID)
 	}
 
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(m)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "omabitrix:", err)
 		os.Exit(1)

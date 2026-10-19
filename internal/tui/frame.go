@@ -3,7 +3,7 @@ package tui
 import (
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -59,6 +59,11 @@ func box(title string, lines []string, innerW int, active bool) string {
 func scrollbarColumn(total, height, offset int) string {
 	if height < 1 {
 		height = 1
+	}
+	// v2: пустой контент даёт 0 строк (v1 — одну пустую) — считаем как 1,
+	// чтобы трек вышел без ползунка, как раньше
+	if total < 1 {
+		total = 1
 	}
 	thumbSize := height * height / total
 	if thumbSize < 1 {

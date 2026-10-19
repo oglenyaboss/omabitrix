@@ -4,29 +4,35 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
-func (m Model) View() string {
+func (m Model) View() tea.View {
+	var s string
 	if !m.ready || m.width == 0 {
 		if m.loadErr != "" {
-			return SplashErr(m.spinner.View(), m.loadErr)
+			s = SplashErr(m.spinner.View(), m.loadErr)
+		} else {
+			s = Splash(m.spinner.View())
 		}
-		return Splash(m.spinner.View())
+	} else if m.overlay == ovHelp {
+		s = m.viewHelp()
+	} else {
+		switch m.tab {
+		case tabChats:
+			s = m.viewChats()
+		case tabTasks:
+			s = m.viewTasks()
+		case tabNotify:
+			s = m.viewNotify()
+		}
+		s += "\n" + m.footer()
 	}
-	if m.overlay == ovHelp {
-		return m.viewHelp()
-	}
-	var body string
-	switch m.tab {
-	case tabChats:
-		body = m.viewChats()
-	case tabTasks:
-		body = m.viewTasks()
-	case tabNotify:
-		body = m.viewNotify()
-	}
-	return body + "\n" + m.footer()
+	v := tea.NewView(s)
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
 }
 
 // Навигация как в tele: вкладок-строки нет, номер и имя панели врезаны
@@ -158,7 +164,7 @@ func (m Model) dialogPane() string {
 			[]string{"", stDim.Render(" enter — открыть чат")}, m.dialW, false)
 	}
 	hist := joinScrollbar(m.vp.View(),
-		scrollbarColumn(m.vp.TotalLineCount(), m.vp.Height, m.vp.YOffset), m.vp.Height)
+		scrollbarColumn(m.vp.TotalLineCount(), m.vp.Height(), m.vp.YOffset()), m.vp.Height())
 	lines := strings.Split(hist, "\n")
 	if m.focus == focusReply {
 		lines = append(lines, strings.Split(m.reply.View(), "\n")...)
