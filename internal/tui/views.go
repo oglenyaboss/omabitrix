@@ -1,0 +1,567 @@
+package tui
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
+
+func (m Model) View() string {
+	if !m.ready || m.width == 0 {
+		if m.loadErr != "" {
+			return SplashErr(m.spinner.View(), m.loadErr)
+		}
+		return Splash(m.spinner.View())
+	}
+	if m.overlay == ovHelp {
+		return m.viewHelp()
+	}
+	var body string
+	switch m.tab {
+	case tabChats:
+		body = m.viewChats()
+	case tabTasks:
+		body = m.viewTasks()
+	case tabNotify:
+		body = m.viewNotify()
+	}
+	return body + "\n" + m.footer()
+}
+
+// Навигация как в tele: вкладок-строки нет, номер и имя панели врезаны
+// в верхнюю грань рамки, активная панель — акцентной рамкой.
+// Хоткеи 1/2/3 читаются прямо из титула.
+
+func paneTitle(num, name string, extra string, active bool) string {
+	idx := ""
+	if num != "" {
+		idx = stBadgeDm.Render("[" + num + "]")
+		if active {
+			idx = stCursor.Render("[" + num + "]")
+		}
+		idx += " "
+	}
+	nameS := stTitle.Render(name)
+	if !active {
+		nameS = stDim.Render(name)
+	}
+	return idx + nameS + extra
+}
+
+// ---- чаты: слева список, справа диалог
+
+func (m Model) viewChats() string {
+	return lipgloss.JoinHorizontal(lipgloss.Top, m.chatListPane(), "  ", m.dialogPane())
+}
+
+func (m Model) unreadTotal() int {
+	n := 0
+	for _, c := range m.chats {
+		n += c.Counter
+	}
+	return n
+}
+
+func (m Model) chatListPane() string {
+	vc := m.visibleChats()
+	start, end, filterRows := m.chatWindow(vc)
+	rows := make([]string, 0, (end-start)*2+3)
+	if filterRows > 0 {
+		if m.focus == focusFilter {
+			rows = append(rows, m.filterIn.View(), "")
+		} else {
+			rows = append(rows, stDim.Render("фильтр: "+m.filter), "")
+		}
+	}
+	if len(vc) == 0 {
+		rows = append(rows, stDim.Render("— пусто —"))
+	}
+	for i := start; i < end; i++ {
+		rows = append(rows, m.chatRows(vc[i], i == m.cursor)...)
+	}
+	active := m.focus != focusReply
+	title := paneTitle("1", "чаты", unreadExtra(m.unreadTotal()), active)
+	return box(title, rows, m.listW, active)
+}
+
+// chatRows — две строки на чат: имя + счётчик справа; превью + время справа.
+func (m Model) chatRows(c Chat, selected bool) []string {
+	inner := m.listW
+	marker := " "
+	if selected {
+		marker = stCursor.Render("▌")
+	}
+	dot := " "
+	if c.Online {
+		dot = stOnline.String()
+	}
+	name := c.Title
+	nameSt := lipgloss.NewStyle()
+	if c.Counter > 0 {
+		nameSt = stChatUnread
+	}
+	if selected {
+		nameSt = stTitle
+	}
+	name = nameSt.Render(truncate(name, inner-9))
+	var badgeStr string
+	if c.Counter > 0 {
+		badgeStr = stBadge.Render(fmt.Sprint(c.Counter))
+	}
+	gap := inner - 3 - lipgloss.Width(name) - lipgloss.Width(badgeStr)
+	if gap < 1 {
+		gap = 1
+	}
+	line1 := marker + dot + " " + name + strings.Repeat(" ", gap) + badgeStr
+
+	preview := stDim.Render("   " + truncate(c.Preview, inner-10))
+	timeGap := inner - 4 - lipgloss.Width(preview) - lipgloss.Width(c.Time)
+	if timeGap < 1 {
+		timeGap = 1
+	}
+	line2 := preview + strings.Repeat(" ", timeGap) + stDim.Render(c.Time)
+	return []string{line1, line2}
+}
+
+func unreadExtra(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return " " + stBadge.Render("·"+fmt.Sprint(n))
+}
+
+// chatWindow — окно видимых чатов: единая точка истины для рендера и мыши.
+func (m Model) chatWindow(vc []Chat) (start, end, filterRows int) {
+	filterRows = 0
+	if m.focus == focusFilter || m.filter != "" {
+		filterRows = 2
+	}
+	capacity := (m.bodyH - 2 - filterRows) / 2
+	if capacity < 1 {
+		capacity = 1
+	}
+	start = 0
+	if m.cursor > capacity-1 {
+		start = m.cursor - capacity + 1
+	}
+	end = start + capacity
+	if end > len(vc) {
+		end = len(vc)
+	}
+	return start, end, filterRows
+}
+
+func (m Model) dialogPane() string {
+	if m.active == nil {
+		return box(paneTitle("", "диалог", "", false),
+			[]string{"", stDim.Render(" enter — открыть чат")}, m.dialW, false)
+	}
+	hist := joinScrollbar(m.vp.View(),
+		scrollbarColumn(m.vp.TotalLineCount(), m.vp.Height, m.vp.YOffset), m.vp.Height)
+	lines := strings.Split(hist, "\n")
+	if m.focus == focusReply {
+		lines = append(lines, strings.Split(m.reply.View(), "\n")...)
+	} else {
+		lines = append(lines, "", stDim.Render(" r — ответить · колесо — скролл"))
+	}
+	title := paneTitle("", truncate(m.active.Title, m.dialW-8), unreadExtra(m.active.Counter), m.focus == focusReply)
+	return box(title, lines, m.dialW, m.focus == focusReply)
+}
+
+// ---- задачи: список (или список + карточка правой панелью)
+
+func (m Model) viewTasks() string {
+	list := m.taskListPane()
+	if !m.taskOpen {
+		return list
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, list, "  ", m.taskCardPane())
+}
+
+func (m Model) taskListPane() string {
+	rows := m.flatTasks()
+	start, end, _ := m.taskWindow(rows)
+	out := make([]string, 0, (end-start)*2+4)
+	var lastKind string
+	for i := start; i < end; i++ {
+		if rows[i].kind != lastKind {
+			out = append(out, sectionHeader(rows[i].kind, m.buckets, m.taskListW()))
+			lastKind = rows[i].kind
+		}
+		out = append(out, m.taskRows(rows[i], i == m.cursor)...)
+	}
+	if len(rows) == 0 {
+		out = append(out, stDim.Render(" — открытых задач нет — "))
+	}
+	title := paneTitle("2", "задачи", unreadExtra(len(m.buckets.Overdue)), m.tab == tabTasks)
+	return box(title, out, m.taskListW(), m.tab == tabTasks)
+}
+
+func (m Model) taskListW() int {
+	if m.taskOpen {
+		return m.listW
+	}
+	return m.width - 4
+}
+
+// taskRows — две строки на задачу: титул; дедлайн dim.
+func (m Model) taskRows(r taskRow, selected bool) []string {
+	inner := m.taskListW()
+	marker := " "
+	if selected {
+		marker = stCursor.Render("▌")
+	}
+	title := r.task.Title
+	if r.kind == "overdue" {
+		title = stUrgent.Render(truncate(title, inner-2))
+	} else {
+		title = truncate(title, inner-2)
+	}
+	line1 := marker + " " + title
+	line2 := ""
+	if r.task.Deadline != "" {
+		line2 = stDim.Render("     󰔞 " + deadlineShort(r.task.Deadline))
+	}
+	return []string{line1, line2}
+}
+
+// taskWindow — окно видимых задач и карта строк (индекс задачи или -1 = секция).
+// Высоты: заголовок секции 1 строка, задача 2 строки; единая точка для рендера и мыши.
+func (m Model) taskWindow(rows []taskRow) (start, end int, lineMap []int) {
+	total := m.bodyH - 2
+	if total < 3 {
+		total = 3
+	}
+	secHeight := func(from, to int) int {
+		h := 0
+		last := ""
+		for i := from; i < to; i++ {
+			if rows[i].kind != last {
+				h++
+				last = rows[i].kind
+			}
+			h += 2
+		}
+		return h
+	}
+	start = 0
+	for start < len(rows) && secHeight(start, m.cursor+1) > total {
+		start++
+	}
+	end = start
+	for end < len(rows) && secHeight(start, end+1) <= total {
+		end++
+	}
+	lineMap = make([]int, 0, (end-start)*2+4)
+	last := ""
+	for i := start; i < end; i++ {
+		if rows[i].kind != last {
+			lineMap = append(lineMap, -1)
+			last = rows[i].kind
+		}
+		lineMap = append(lineMap, i, i)
+	}
+	return start, end, lineMap
+}
+
+func sectionHeader(kind string, b TaskBuckets, w int) string {
+	var s string
+	switch kind {
+	case "overdue":
+		s = stUrgent.Bold(true).Render(fmt.Sprintf("ПРОСРОЧЕНО · %d", len(b.Overdue)))
+	case "today":
+		s = stBold.Render(fmt.Sprintf("СЕГОДНЯ · %d", len(b.Today)))
+	case "later":
+		s = stBoldDim.Render("ПОЗЖЕ")
+	default:
+		s = stBoldDim.Render("БЕЗ ДЕДЛАЙНА")
+	}
+	return dayDivider(s, w)
+}
+
+func deadlineShort(dl string) string {
+	if len(dl) >= 10 {
+		d := dl[8:10] + "." + dl[5:7]
+		if len(dl) >= 16 {
+			d += " " + dl[11:16]
+		}
+		return d
+	}
+	return dl
+}
+
+// ---- карточка задачи (правая панель вкладки задач)
+
+func (m Model) taskCardPane() string {
+	t := m.taskCard
+	inner := m.cardW
+	cardInner := m.bodyH - 2
+	if cardInner < 4 {
+		cardInner = 4
+	}
+	menuH := 0
+	switch m.overlay {
+	case ovStatus:
+		menuH = len(statusOptions(t.Status)) + 3
+	case ovDeadline:
+		menuH = len(deadlineOptions(m.api.now(), t.Deadline)) + 3
+	}
+	chatRows := 0
+	if t.ChatID > 0 {
+		chatRows = 2
+	}
+	descMax := cardInner - 5 - chatRows - menuH // шапка(4) + пустая после desc
+	if descMax < 3 {
+		descMax = 3
+	}
+	lines := make([]string, 0, 16)
+	lines = append(lines, stTitle.Render(truncate(t.Title, inner-2)), "")
+	meta := []string{}
+	if t.CreatorName != "" {
+		meta = append(meta, "от "+t.CreatorName)
+	}
+	if t.Deadline != "" {
+		meta = append(meta, "󰔞 "+deadlineShort(t.Deadline))
+	}
+	meta = append(meta, "статус: "+statusName(t.Status))
+	lines = append(lines, stDim.Render("  "+strings.Join(meta, "  ·  ")), "")
+	if t.Description != "" {
+		desc := wordwrapWrap(t.Description, inner-4, 2)
+		l := strings.Split(desc, "\n")
+		if len(l) > descMax {
+			// descMax строк ВКЛЮЧАЯ строку-эллипсис
+			l = append(l[:descMax-1], stDim.Render("  …"))
+		}
+		lines = append(lines, l...)
+		lines = append(lines, "")
+	}
+	if t.ChatID > 0 {
+		lines = append(lines, stDim.Render("  󰭹 чат задачи · c"), "")
+	}
+	switch m.overlay {
+	case ovStatus:
+		lines = append(lines, "")
+		lines = append(lines, strings.Split(m.statusMenu(), "\n")...)
+	case ovDeadline:
+		lines = append(lines, "")
+		lines = append(lines, strings.Split(m.deadlineMenu(), "\n")...)
+	}
+	title := paneTitle("", "задача · #"+fmt.Sprint(t.ID), "", m.tab == tabTasks)
+	return box(title, lines, m.cardW, m.tab == tabTasks)
+}
+
+func (m Model) statusMenu() string {
+	opts := statusOptions(m.taskCard.Status)
+	rows := make([]string, 0, len(opts))
+	for i, o := range opts {
+		line := " " + o.name
+		if i == m.statusIdx {
+			line = stCursor.Render("▌") + " " + stTitle.Render(o.name)
+		}
+		rows = append(rows, line)
+	}
+	// меню вложено в панель: по 1 колонке на паддинг панели с каждой стороны
+	return box("", rows, m.cardW-4, true)
+}
+
+func (m Model) deadlineMenu() string {
+	opts := deadlineOptions(m.api.now(), m.taskCard.Deadline)
+	rows := make([]string, 0, len(opts))
+	for i, o := range opts {
+		line := fmt.Sprintf(" %d %s", i+1, o.label)
+		if i == m.deadlineIdx {
+			line = stCursor.Render("▌") + stTitle.Render(fmt.Sprintf(" %d %s", i+1, o.label))
+		}
+		rows = append(rows, line)
+	}
+	return box("", rows, m.cardW-4, true)
+}
+
+func statusName(code string) string {
+	names := map[string]string{
+		"1": "новая", "2": "ждёт выполнения", "3": "в работе",
+		"4": "на проверке", "5": "завершена", "6": "отложена", "7": "отклонена",
+	}
+	if n, ok := names[code]; ok {
+		return n
+	}
+	return code
+}
+
+// ---- уведы
+
+func (m Model) viewNotify() string {
+	rows := m.notify
+	start, end := m.notifyWindow(len(rows))
+	out := make([]string, 0, (end-start)*2+2)
+	if len(rows) == 0 {
+		out = append(out, stDim.Render(" — уведомлений нет — (R — обновить) "))
+	}
+	for i := start; i < end; i++ {
+		out = append(out, m.notifyRows(rows[i], i == m.cursor)...)
+	}
+	title := paneTitle("3", "уведы", unreadExtra(countUnread(m.notify)), m.tab == tabNotify)
+	return box(title, out, m.width-4, m.tab == tabNotify)
+}
+func countUnread(rows []NotifyItem) int {
+	n := 0
+	for _, r := range rows {
+		if r.Unread {
+			n++
+		}
+	}
+	return n
+}
+
+func (m Model) notifyWindow(n int) (start, end int) {
+	capacity := (m.bodyH - 2) / 2
+	if capacity < 1 {
+		capacity = 1
+	}
+	start = 0
+	if m.cursor > capacity-1 {
+		start = m.cursor - capacity + 1
+	}
+	end = start + capacity
+	if end > n {
+		end = n
+	}
+	return start, end
+}
+
+// notifyRows — две строки на увед: глиф+титул+время; текст dim.
+func (m Model) notifyRows(n NotifyItem, selected bool) []string {
+	inner := m.width - 4
+	glyph := "󰅎"
+	switch n.Module {
+	case "tasks":
+		glyph = "󰄬"
+	case "calendar":
+		glyph = "󰃭"
+	case "disk":
+		glyph = "󰋊"
+	}
+	title := n.Title
+	if title == "" {
+		title = n.Text
+	}
+	titleSt := lipgloss.NewStyle()
+	if n.Unread {
+		titleSt = stChatUnread
+	}
+	if selected {
+		titleSt = stTitle
+	}
+	t := titleSt.Render(truncate(title, inner-12))
+	marker := " "
+	if selected {
+		marker = stCursor.Render("▌")
+	}
+	gap := inner - 3 - lipgloss.Width(t) - lipgloss.Width(n.Time)
+	if gap < 1 {
+		gap = 1
+	}
+	line1 := marker + glyph + " " + t + strings.Repeat(" ", gap) + stDim.Render(n.Time)
+	body := ""
+	if n.Text != "" && n.Text != title {
+		body = stDim.Render("   " + truncate(n.Text, inner-4))
+	}
+	return []string{line1, body}
+}
+
+// ---- help
+
+func (m Model) viewHelp() string {
+	rows := []struct{ k, d string }{
+		{"j/k ↑↓", "навигация"},
+		{"1 2 3", "чаты / задачи / уведы"},
+		{"enter", "открыть"},
+		{"r", "ответить в чате"},
+		{"enter в ответе", "отправить"},
+		{"esc", "назад / отмена"},
+		{"s", "сменить статус задачи"},
+		{"d", "сдвинуть срок задачи"},
+		{"c", "чат задачи из карточки"},
+		{"enter на уведе", "открыть задачу"},
+		{"H", "догрузить историю"},
+		{"/", "поиск по чатам"},
+		{"A", "уведы: всё прочитано"},
+		{"R", "обновить всё"},
+		{"g / G", "в начало / в конец"},
+		{"b / f", "страница вверх/вниз"},
+		{"колесо мыши", "скролл / список"},
+		{"?", "эта справка"},
+		{"q", "выход (из диалога — назад)"},
+	}
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, "  "+help(r.k, r.d))
+	}
+	return "\n" + stTitle.Render("  хоткеи") + "\n\n" +
+		strings.Join(out, "\n") + "\n\n" + stDim.Render("  любая клавиша — назад")
+}
+
+// footer: контекстная справка + ошибки + флеш.
+func (m Model) footer() string {
+	var left string
+	switch {
+	case m.active != nil && m.focus != focusReply:
+		left = strings.Join([]string{
+			help("r", "ответить"), help("H", "раньше"), help("b/f", "страница"),
+			help("esc", "к списку"),
+		}, " · ")
+	case m.focus == focusReply:
+		left = strings.Join([]string{
+			help("enter", "отправить"), help("esc", "отмена"),
+		}, " · ")
+	case m.tab == tabTasks && m.taskOpen:
+		hints := []string{help("s", "статус"), help("d", "срок")}
+		if m.taskCard.ChatID > 0 {
+			hints = append(hints, help("c", "чат задачи"))
+		}
+		hints = append(hints, help("q", "назад"))
+		left = strings.Join(hints, " · ")
+	case m.tab == tabTasks:
+		left = strings.Join([]string{
+			help("enter", "карточка"), help("R", "обновить"),
+		}, " · ")
+	case m.tab == tabNotify:
+		left = strings.Join([]string{
+			help("enter", "в задачу"), help("A", "всё прочитано"), help("R", "обновить"),
+		}, " · ")
+	default:
+		left = strings.Join([]string{
+			help("enter", "открыть"), help("/", "поиск"), help("?", "хоткеи"),
+		}, " · ")
+	}
+	var right string
+	switch {
+	case m.loadErr != "":
+		right = stErr.Render("⚠ " + truncate(m.loadErr, m.width-lipgloss.Width(left)-6))
+	case m.flashLine() != "":
+		right = m.flashLine()
+	case m.sending:
+		right = stDim.Render("отправка…")
+	}
+	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
+	if gap < 1 {
+		gap = 1
+	}
+	return stFooter.Render(left + strings.Repeat(" ", gap) + right)
+}
+
+func truncate(s string, n int) string {
+	if n <= 0 {
+		return s
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
+}
+
+func wordwrapWrap(text string, width, indent int) string {
+	return indentWrap(text, width, indent)
+}

@@ -1,0 +1,34 @@
+# omabitrix — конфиг демона. Копировать в ~/.config/omabitrix/config.toml
+# Портал (без слэша в конце)
+portal = "https://portal.example.com"
+
+# Входящий вебхук: Приложения → Вебхуки (права: im + task)
+webhook_user = 75
+webhook_secret = "XXXXXXXXXXXXXXXX"
+
+# Твой ID юзера (пусто = webhook_user)
+user_id = 75
+
+# Таймзона, в которой считаем границы «сегодня» (по умолчанию — из дат задач; тут можно перезадать)
+tz = "Asia/Yekaterinburg"
+
+# Интервал опроса, секунды
+poll_interval = 10
+# клик по тосту: "tui" — открыть omabitrix в чате/задаче, "web" — браузер
+toast_open = "tui"
+
+# Тишина: всё глушится, просрочки копятся в счётчике
+[dnd]
+start = "23:00"
+end = "08:00"
+
+# Открытые линии в счётчике 💬 (по умолчанию выкл)
+count_lines = false
+
+# Не тостить эти диалоги
+ignore_chats = []
+# ignore_chats = ["chat10777"]
+
+# Куда писать состояние и снапшот для бар-плагина (по умолчанию — стандартные пути)
+# state_path = "~/.local/state/omabitrix/state.json"
+# snapshot_path = "~/.local/state/omabitrix/snapshot.json"

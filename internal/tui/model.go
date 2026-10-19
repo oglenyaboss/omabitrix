@@ -1,0 +1,826 @@
+package tui
+
+import (
+	"context"
+	"strings"
+	"time"
+
+	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/wordwrap"
+)
+
+type tab int
+
+const (
+	tabChats tab = iota
+	tabTasks
+	tabNotify
+	tabCount
+)
+
+type focus int
+
+const (
+	focusList focus = iota
+	focusReply
+	focusFilter
+)
+
+type overlay int
+
+const (
+	ovNone overlay = iota
+	ovHelp
+	ovStatus
+	ovDeadline
+)
+
+// Model — корневая модель: одна Update, экраны — рендер-функции.
+type Model struct {
+	api *API
+	ctx context.Context
+
+	tab     tab
+	overlay overlay
+
+	chats   []Chat
+	tasks   []Task
+	buckets TaskBuckets
+	notify  []NotifyItem
+
+	cursor   int // список чатов/задач/уведов (по вкладке)
+	filter   string
+	filterIn textinput.Model
+	focus    focus
+
+	active  *Chat
+	history []Message
+	noMore  bool
+	vp      viewport.Model
+	reply   textarea.Model
+	sending bool
+	loadErr string
+
+	taskIdx     int // выбранная задача в плоском списке
+	taskCard    Task
+	taskOpen    bool
+	cardReq     int64 // последний запрошенный id — защита от гонки ответов
+	statusIdx   int
+	deadlineIdx int
+
+	drafts map[string]string // черновики по диалогам
+
+	listW, dialW, cardW, bodyH int
+
+	width, height int
+	spinner       spinner.Model
+	ready         bool
+	flash         string
+	flashAt       time.Time
+
+	pendingChat string
+	pendingTask int64
+}
+
+// OpenChat — открыть диалог после загрузки (--chat).
+func (m *Model) OpenChat(dialogID string) { m.pendingChat = dialogID }
+
+// OpenTask — открыть карточку после загрузки (--task).
+func (m *Model) OpenTask(id int64) { m.pendingTask = id }
+
+func NewModel(api *API, ctx context.Context) Model {
+	sp := spinner.New(spinner.WithSpinner(spinner.Points))
+	ta := textarea.New()
+	ta.Placeholder = "ответить… enter — отправить, esc — отмена"
+	ta.CharLimit = 2000
+	ta.SetHeight(3)
+	ta.ShowLineNumbers = false
+	ta.KeyMap.InsertNewline.SetEnabled(false) // enter = отправка
+	ti := textinput.New()
+	ti.Placeholder = "фильтр чатов…"
+	ti.CharLimit = 60
+	return Model{
+		api: api, ctx: ctx,
+		spinner: sp, reply: ta, filterIn: ti,
+		drafts: map[string]string{},
+	}
+}
+
+func (m Model) Init() tea.Cmd {
+	return tea.Batch(m.spinner.Tick, m.reloadAllCmd(), tick10s())
+}
+
+func tick10s() tea.Cmd {
+	return tea.Tick(10*time.Second, func(time.Time) tea.Msg { return tickMsg{} })
+}
+
+type tickMsg struct{}
+
+type tickReload struct{} // пришло из подгрузки
+
+// loadCmd — одна ветка данных, приходят независимо: висящий запрос
+// не держит остальные.
+func (m Model) loadCmd(what string) tea.Cmd {
+	api, ctx := m.api, m.ctx
+	return func() tea.Msg {
+		switch what {
+		case "chats":
+			_, err := api.Chats(ctx, true)
+			return reloadMsg{chats: true, errs: errStr(err)}
+		case "tasks":
+			_, err := api.OpenTasks(ctx, true)
+			return reloadMsg{tasks: true, errs: errStr(err)}
+		default:
+			_, err := api.Notify(ctx, true)
+			return reloadMsg{notify: true, errs: errStr(err)}
+		}
+	}
+}
+
+// reloadAllCmd — перечитать все три списка; один кодовый путь для Init, R и тика.
+func (m Model) reloadAllCmd() tea.Cmd {
+	return tea.Batch(m.loadCmd("chats"), m.loadCmd("tasks"), m.loadCmd("notify"))
+}
+
+func errStr(err error) []string {
+	if err == nil {
+		return nil
+	}
+	return []string{err.Error()}
+}
+
+type reloadMsg struct {
+	chats, tasks, notify bool
+	errs                 []string
+}
+
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		m.layout()
+		return m, nil
+
+	case tickMsg:
+		// активность мимо TUI (ответ Анны, отправка из веба) тоже должна
+		// обновлять списки — иначе они висят с момента старта/последней отправки
+		if m.active != nil {
+			return m, tea.Batch(m.refreshActiveCmd(), m.reloadAllCmd(), tick10s())
+		}
+		return m, tea.Batch(m.reloadAllCmd(), tick10s())
+
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+
+	case reloadMsg:
+		m.ready = true
+		if msg.chats {
+			m.chats = m.api.snapshotChats()
+		}
+		if msg.tasks {
+			m.tasks = m.api.snapshotTasks()
+			m.buckets = Buckets(m.tasks, m.api.C.ServerLoc(), m.api.now())
+		}
+		if msg.notify {
+			m.notify = m.api.snapshotNotify()
+		}
+		if m.active != nil {
+			for i := range m.chats {
+				if m.chats[i].DialogID == m.active.DialogID {
+					m.active = &m.chats[i]
+					break
+				}
+			}
+		}
+		if len(msg.errs) > 0 {
+			m.loadErr = strings.Join(msg.errs, "; ")
+		} else {
+			m.loadErr = ""
+		}
+		m.clampCursors()
+		m.layout()
+		if m.pendingChat != "" {
+			id := m.pendingChat
+			m.pendingChat = ""
+			m.openChatByDialog(id)
+			return m, m.historyCmd(id, 0)
+		}
+		if m.pendingTask != 0 {
+			id := m.pendingTask
+			m.pendingTask = 0
+			// deep-link: встать курсором на задачу, если она в списке открытых;
+			// закрытая всё равно откроется карточкой
+			for i, r := range m.flatTasks() {
+				if r.task.ID == id {
+					m.cursor, m.taskIdx = i, i
+					break
+				}
+			}
+			m.cardReq = id
+			return m, m.loadTaskCardCmd(id)
+		}
+		return m, nil
+
+	case historyMsg:
+		if msg.err != nil {
+			m.loadErr = msg.err.Error()
+			return m, nil
+		}
+		m.noMore = msg.noMore
+		if m.active != nil && msg.dialogID == m.active.DialogID {
+			if msg.prepend {
+				// догрузка старых: держим позицию (YOffset += прирост)
+				old := m.vp.TotalLineCount()
+				atBottom := m.vp.AtBottom() || old == 0
+				m.history = append(msg.rows, m.history...)
+				m.renderHistory()
+				if !atBottom {
+					m.vp.SetYOffset(m.vp.TotalLineCount() - old)
+				}
+			} else {
+				// тик-обновление не должно вырывать юзера из истории: к низу —
+				// только если он и был у низа
+				atBottom := m.vp.AtBottom() || len(m.history) == 0
+				m.history = msg.rows
+				m.renderHistory()
+				if atBottom {
+					m.vp.GotoBottom()
+				}
+			}
+		}
+		return m, nil
+
+	case sentMsg:
+		m.sending = false
+		if msg.err != nil {
+			m.loadErr = "не отправлено: " + msg.err.Error()
+			m.replyActive()
+			return m, nil
+		}
+		m.reply.Reset()
+		delete(m.drafts, m.active.DialogID)
+		m.focus = focusList
+		now := m.api.now()
+		key, label := DayInfo(now.Format(time.RFC3339), now)
+		m.history = append(m.history, Message{
+			ID: msg.id, Text: msg.text,
+			Time: now.Local().Format("15:04"), DayKey: key, DayLabel: label,
+			Mine: true,
+		})
+		m.api.chatsAt = time.Time{} // превью списка обновится при следующем Chats()
+		m.renderHistory()
+		m.vp.GotoBottom()
+		return m, m.loadCmd("chats")
+
+	case statusMsg:
+		if msg.err != nil {
+			m.loadErr = "статус не изменён: " + msg.err.Error()
+			return m, nil
+		}
+		m.overlay = ovNone
+		m.flash = "✓ статус обновлён"
+		m.flashAt = m.api.now()
+		if m.taskOpen {
+			return m, m.loadTaskCardCmd(m.taskCard.ID)
+		}
+		return m, m.loadCmd("tasks")
+
+	case deadlineMsg:
+		if msg.err != nil {
+			m.loadErr = "срок не изменён: " + msg.err.Error()
+			return m, nil
+		}
+		m.overlay = ovNone
+		m.flash = "✓ срок обновлён"
+		m.flashAt = m.api.now()
+		if m.taskOpen {
+			return m, tea.Batch(m.loadTaskCardCmd(m.taskCard.ID), m.loadCmd("tasks"))
+		}
+		return m, m.loadCmd("tasks")
+
+	case taskCardMsg:
+		if msg.requested != m.cardReq {
+			return m, nil // устарел: пока грузили, выбрали другую задачу
+		}
+		if msg.err != nil {
+			m.loadErr = msg.err.Error()
+			return m, nil
+		}
+		m.taskCard = msg.task
+		m.taskOpen = true
+		m.tab = tabTasks
+		m.cursor = m.taskIdx
+		return m, nil
+
+	case tea.MouseMsg:
+		return m.mouseClick(msg)
+
+	case readAllMsg:
+		if msg.err != nil {
+			m.loadErr = "не прочитано: " + msg.err.Error()
+			return m, nil
+		}
+		m.notify = m.api.snapshotNotify()
+		m.flash = "✓ всё прочитано"
+		m.flashAt = m.api.now()
+		return m, nil
+
+	case tea.KeyMsg:
+		if !m.ready {
+			// «любая клавиша — пропустить»: входим с тем, что загрузилось,
+			// клавиша при этом применяется (не теряется)
+			m.ready = true
+			m.layout()
+			return m.keys(msg)
+		}
+		return m.keys(msg)
+	}
+	return m, nil
+}
+
+// ---- служебное
+
+// layout: сетка экрана. bodyH — высота контента под хедером/футером.
+// Рамки добавляют по 2: width - 2 = контент.
+func (m *Model) layout() {
+	if m.width == 0 || m.height == 0 {
+		return
+	}
+	m.listW = m.width / 3
+	if m.listW > 46 {
+		m.listW = 46
+	}
+	if m.listW < 12 {
+		m.listW = 12
+	}
+	m.dialW = m.width - (m.listW + 4) - 2 - 4
+	if m.dialW < 20 {
+		m.dialW = 20
+	}
+	m.cardW = m.width - (m.listW + 4) - 2 - 4
+	if m.cardW < 20 {
+		m.cardW = 20
+	}
+	m.bodyH = m.height - 1
+	if m.bodyH < 6 {
+		m.bodyH = 6
+	}
+	// единственная точка правды ширины истории: минус колонка скроллбара
+	m.vp.Width = m.dialW - 2
+	replyRows := 2 // пустая + подсказка «r — ответить»
+	if m.focus == focusReply {
+		replyRows = 3
+	}
+	m.vp.Height = m.bodyH - 2 - replyRows
+	if m.vp.Height < 2 {
+		m.vp.Height = 2
+	}
+	m.reply.SetWidth(m.dialW - 4)
+	m.reply.SetHeight(3)
+	if m.focus == focusFilter {
+		m.filterIn.Width = m.listW - 6
+	}
+	m.renderHistory()
+}
+
+func (m *Model) clampCursors() {
+	n := m.visibleCount()
+	if n == 0 {
+		m.cursor = 0
+		return
+	}
+	if m.cursor >= n {
+		m.cursor = n - 1
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+}
+
+func (m *Model) replyActive() {
+	m.focus = focusReply
+	m.layout()
+}
+
+// ---- команды
+
+type historyMsg struct {
+	dialogID string
+	rows     []Message
+	noMore   bool
+	prepend  bool
+	err      error
+}
+
+func (m Model) historyCmd(dialogID string, lastID int64) tea.Cmd {
+	api, ctx := m.api, m.ctx
+	return func() tea.Msg {
+		rows, noMore, err := api.History(ctx, dialogID, lastID)
+		return historyMsg{dialogID: dialogID, rows: rows, noMore: noMore,
+			prepend: lastID > 0, err: err}
+	}
+}
+
+func (m Model) refreshActiveCmd() tea.Cmd {
+	if m.active == nil {
+		return nil
+	}
+	return m.historyCmd(m.active.DialogID, 0)
+}
+
+type sentMsg struct {
+	id   int64
+	text string
+	err  error
+}
+
+func (m Model) sendCmd() tea.Cmd {
+	api, ctx := m.api, m.ctx
+	dialogID, text := m.active.DialogID, strings.TrimSpace(m.reply.Value())
+	return func() tea.Msg {
+		id, err := api.Send(ctx, dialogID, text)
+		return sentMsg{id: id, text: text, err: err}
+	}
+}
+
+type statusMsg struct{ err error }
+
+func (m Model) statusCmd(id int64, status string) tea.Cmd {
+	api, ctx := m.api, m.ctx
+	return func() tea.Msg {
+		return statusMsg{err: api.SetStatus(ctx, id, status)}
+	}
+}
+
+type deadlineMsg struct{ err error }
+
+func (m Model) deadlineCmd(id int64, dl string) tea.Cmd {
+	api, ctx := m.api, m.ctx
+	return func() tea.Msg { return deadlineMsg{err: api.SetDeadline(ctx, id, dl)} }
+}
+
+// dlOpt — пункт меню сроков.
+type dlOpt struct{ label, val string }
+
+// deadlineOptions: сегодня/завтра — всегда 18:00 в локали юзера;
+// сдвиги — от текущего дедлайна с его временем (или 18:00).
+func deadlineOptions(now time.Time, cur string) []dlOpt {
+	at1800 := func(day time.Time) string {
+		d := time.Date(day.Year(), day.Month(), day.Day(), 18, 0, 0, 0, time.Local)
+		return d.Format(time.RFC3339)
+	}
+	base, hasBase := ParseDeadline(cur, time.Local)
+	if !hasBase {
+		base = now
+	}
+	shift := func(days int) string {
+		d := base.AddDate(0, 0, days)
+		if hasBase {
+			return d.Format(time.RFC3339)
+		}
+		return at1800(d)
+	}
+	return []dlOpt{
+		{"сегодня 18:00", at1800(now)},
+		{"завтра 18:00", at1800(now.AddDate(0, 0, 1))},
+		{"+1 день", shift(1)},
+		{"+1 неделя", shift(7)},
+		{"снять дедлайн", ""},
+	}
+}
+
+type taskCardMsg struct {
+	requested int64
+	task      Task
+	err       error
+}
+
+func (m Model) loadTaskCardCmd(id int64) tea.Cmd {
+	api, ctx := m.api, m.ctx
+	return func() tea.Msg {
+		t, err := api.Task(ctx, id)
+		return taskCardMsg{requested: id, task: t, err: err}
+	}
+}
+
+type readAllMsg struct{ err error }
+
+func (m Model) readAllCmd() tea.Cmd {
+	api, ctx := m.api, m.ctx
+	return func() tea.Msg { return readAllMsg{err: api.ReadAllNotify(ctx)} }
+}
+
+// mouseClick — клик открывает элемент списка, колесо скроллит.
+func (m Model) mouseClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.focus != focusList || m.overlay != ovNone {
+		return m, nil
+	}
+	switch msg.Button {
+	case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
+		return m.mouseWheel(msg)
+	case tea.MouseButtonLeft:
+		if msg.Action != tea.MouseActionPress {
+			return m, nil
+		}
+		return m.mouseLeft(msg)
+	}
+	return m, nil
+}
+
+// wheel: над диалогом — скролл истории, над списком — курсор.
+func (m Model) mouseWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	up := msg.Button == tea.MouseButtonWheelUp
+	if m.active != nil && msg.X > m.listW+4 {
+		if up {
+			m.vp.ScrollUp(3)
+		} else {
+			m.vp.ScrollDown(3)
+		}
+		return m, nil
+	}
+	if up {
+		if m.cursor > 0 {
+			m.cursor--
+		}
+		return m, nil
+	}
+	if m.cursor < m.visibleCount()-1 {
+		m.cursor++
+	}
+	return m, nil
+}
+
+// mouseLeft: геометрия строк синхронна с chatWindow/taskWindow/notifyWindow.
+func (m Model) mouseLeft(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	switch m.tab {
+	case tabChats:
+		if msg.X > m.listW+4 {
+			return m, nil
+		}
+		vc := m.visibleChats()
+		start, _, filterRows := m.chatWindow(vc)
+		idx := (msg.Y - 1 - filterRows) / 2 // строка 0 — верхняя грань рамки
+		if idx < 0 || start+idx >= len(vc) {
+			return m, nil
+		}
+		m.cursor = start + idx
+		if m.active == nil || m.active.DialogID != vc[m.cursor].DialogID {
+			m.openDialog(m.cursor)
+			if m.active != nil {
+				return m, m.historyCmd(m.active.DialogID, 0)
+			}
+		}
+	case tabTasks:
+		// гейт как в чатах: клик по карточке — не список
+		if m.taskOpen && msg.X > m.listW+4 {
+			return m, nil
+		}
+		rows := m.flatTasks()
+		_, _, lineMap := m.taskWindow(rows)
+		idx := msg.Y - 1
+		if idx < 0 || idx >= len(lineMap) || lineMap[idx] < 0 {
+			return m, nil
+		}
+		m.cursor = lineMap[idx]
+		return m.enterKey()
+	case tabNotify:
+		start, _ := m.notifyWindow(len(m.notify))
+		idx := (msg.Y - 1) / 2
+		if idx < 0 || start+idx >= len(m.notify) {
+			return m, nil
+		}
+		m.cursor = start + idx
+		return m.enterKey()
+	}
+	return m, nil
+}
+
+// ---- данные для рендера
+
+func (m *Model) visibleChats() []Chat {
+	if m.filter == "" {
+		return m.chats
+	}
+	f := strings.ToLower(m.filter)
+	out := make([]Chat, 0, len(m.chats))
+	for _, c := range m.chats {
+		if strings.Contains(strings.ToLower(c.Title), f) ||
+			strings.Contains(strings.ToLower(c.Preview), f) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func (m *Model) visibleCount() int {
+	switch m.tab {
+	case tabChats:
+		return len(m.visibleChats())
+	case tabTasks:
+		return len(m.flatTasks())
+	default:
+		return len(m.notify)
+	}
+}
+
+type taskRow struct {
+	task Task
+	kind string // overdue/today/later/nodate
+}
+
+func (m *Model) flatTasks() []taskRow {
+	out := make([]taskRow, 0, len(m.tasks))
+	for _, t := range m.buckets.Overdue {
+		out = append(out, taskRow{t, "overdue"})
+	}
+	for _, t := range m.buckets.Today {
+		out = append(out, taskRow{t, "today"})
+	}
+	for _, t := range m.buckets.Later {
+		out = append(out, taskRow{t, "later"})
+	}
+	for _, t := range m.buckets.NoDate {
+		out = append(out, taskRow{t, "nodate"})
+	}
+	return out
+}
+
+// cardMatchesCursor — s/d безопасны только над карточкой той задачи,
+// что стоит под курсором (иначе гонка «курсор ушёл, карточка старая»).
+func (m Model) cardMatchesCursor() bool {
+	if m.taskCard.ID == 0 {
+		return false
+	}
+	rows := m.flatTasks()
+	return m.cursor < len(rows) && rows[m.cursor].task.ID == m.taskCard.ID
+}
+
+// openChatByDialog — вход из --chat (тосты/бар) и из карточки задачи («c»).
+func (m *Model) openChatByDialog(id string) {
+	for i := range m.chats {
+		if m.chats[i].DialogID == id {
+			m.tab = tabChats
+			m.openDialog(i)
+			return
+		}
+	}
+	// чат задачи не в списке (отфильтрован) — synthetic
+	m.tab = tabChats
+	m.active = &Chat{DialogID: id, Title: "чат " + id}
+	m.reply.SetValue(m.drafts[id])
+	m.openHistory()
+}
+
+func (m *Model) openDialog(idx int) {
+	vc := m.visibleChats()
+	if idx < 0 || idx >= len(vc) {
+		return
+	}
+	m.active = &vc[idx]
+	m.cursor = idx
+	m.reply.SetValue(m.drafts[m.active.DialogID])
+	m.openHistory()
+}
+
+// closeDialog — выход из чата: с карточки задачи возвращаемся на неё.
+func (m *Model) closeDialog() {
+	if m.active != nil && m.reply.Value() != "" {
+		m.drafts[m.active.DialogID] = m.reply.Value()
+	}
+	m.active = nil
+	if m.taskOpen {
+		m.tab = tabTasks
+	}
+}
+
+func (m *Model) openHistory() {
+	m.history = nil
+	m.noMore = false
+	m.renderHistory()
+}
+
+// renderHistory — tele-стиль: подряд идущие сообщения одного автора
+// группируются (имя один раз), mine — маркером без имени, даты по центру.
+// потолок: prepend-догрузка может слить две серии одного автора на границе —
+// сдвиг скролла на 1–2 строки, приемлемо.
+func (m *Model) renderHistory() {
+	if m.vp.Width <= 0 {
+		return
+	}
+	W := m.vp.Width - 1
+	if W < 10 {
+		W = 10
+	}
+	type hgroup struct {
+		author       int64
+		name         string
+		mine, system bool
+		msgs         []Message
+	}
+	var groups []hgroup
+	for _, msg := range m.history {
+		if msg.System {
+			groups = append(groups, hgroup{system: true, msgs: []Message{msg}})
+			continue
+		}
+		if n := len(groups); n > 0 && !groups[n-1].system &&
+			groups[n-1].mine == msg.Mine && groups[n-1].author == msg.AuthorID {
+			groups[n-1].msgs = append(groups[n-1].msgs, msg)
+			continue
+		}
+		groups = append(groups, hgroup{author: msg.AuthorID, name: msg.Name,
+			mine: msg.Mine, msgs: []Message{msg}})
+	}
+	var b strings.Builder
+	var prevDay string
+	for gi, g := range groups {
+		first := g.msgs[0]
+		if first.DayKey != prevDay && first.DayLabel != "" {
+			if gi > 0 {
+				b.WriteString("\n")
+			}
+			b.WriteString(dayDivider(stDim.Render(first.DayLabel), W) + "\n")
+			prevDay = first.DayKey
+		} else if gi > 0 {
+			b.WriteString("\n")
+		}
+		switch {
+		case g.system:
+			for _, msg := range g.msgs {
+				b.WriteString(centered(stDim.Render("· "+msg.Text+" ·"), W) + "\n")
+			}
+		case g.mine:
+			for i, msg := range g.msgs {
+				if i == 0 {
+					line := stAccent.Render("›") + stDim.Render(" "+msg.Time+" ") +
+						stBubbleMine.Render(msg.Text)
+					b.WriteString(indentWrap(line, W, 2) + "\n")
+					continue
+				}
+				b.WriteString(indentWrap(stBubbleMine.Render(msg.Text), W, 2) + "\n")
+			}
+		default:
+			name := g.name
+			if name == "" {
+				name = "?"
+			}
+			b.WriteString(authorStyle(g.author).Render(name) +
+				stDim.Render(" "+first.Time) + "\n")
+			for _, msg := range g.msgs {
+				b.WriteString(indentWrap(msg.Text, W, 2) + "\n")
+			}
+		}
+	}
+	m.vp.SetContent(b.String())
+}
+
+func centered(s string, w int) string {
+	pad := w - lipgloss.Width(s)
+	if pad < 0 {
+		pad = 0
+	}
+	return strings.Repeat(" ", pad/2) + s
+}
+
+// dayDivider — «── сегодня ──» по центру; лейбл приходит стилизованным.
+func dayDivider(label string, w int) string {
+	fill := w - lipgloss.Width(label) - 2
+	if fill < 2 {
+		return label
+	}
+	left := fill / 2
+	return stDim.Render(strings.Repeat("─", left)+" ") + label +
+		stDim.Render(" "+strings.Repeat("─", fill-left))
+}
+
+func indentWrap(text string, width, indent int) string {
+	wrapped := wordwrap.String(text, width-4)
+	pad := strings.Repeat(" ", indent)
+	lines := strings.Split(wrapped, "\n")
+	for i := range lines {
+		if i > 0 {
+			lines[i] = pad + lines[i]
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *Model) flashLine() string {
+	if m.flash == "" || m.api.now().Sub(m.flashAt) > 4*time.Second {
+		return ""
+	}
+	return stAccent.Render(m.flash)
+}
+
+// ---- снапшоты из api (после reload)
+
+func (a *API) snapshotChats() []Chat        { return a.allChats }
+func (a *API) snapshotTasks() []Task        { return a.allTasks }
+func (a *API) snapshotNotify() []NotifyItem { return a.allNotify }

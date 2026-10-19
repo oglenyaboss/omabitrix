@@ -1,0 +1,6 @@
+config.toml
+/bin/
+*.local*
+*.test
+__pycache__/
+.pi/

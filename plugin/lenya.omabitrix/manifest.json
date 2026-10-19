@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "lenya.omabitrix",
+  "name": "Omabitrix",
+  "version": "0.1.0",
+  "author": "lenya",
+  "license": "MIT",
+  "description": "One bar icon and one panel: unread chats with inline reply, overdue and today tasks.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Omabitrix.qml"
+  },
+  "barWidget": {
+    "displayName": "Omabitrix",
+    "description": "Счётчики Bitrix24: непрочитанные чаты, дедлайны и просрочки задач. Данные читает из снапшота демона omabitrixd.",
+    "category": "Communication",
+    "aliases": [
+      "bitrix",
+      "bitrix24",
+      "b24",
+      "crm"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "left",
+    "schema": [
+      {
+        "key": "portal",
+        "type": "string",
+        "label": "Портал",
+        "description": "URL портала Bitrix24, открывается по клику",
+        "defaultValue": "https://portal.example.com"
+      }
+    ]
+  }
+}
