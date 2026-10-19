@@ -188,7 +188,19 @@ func (m Model) dialogPane() string {
 		scrollbarColumn(m.vp.TotalLineCount(), m.vp.Height(), m.vp.YOffset()), m.vp.Height())
 	lines := strings.Split(hist, "\n")
 	switch {
+	case m.overlay == ovConfirm:
+		lines = append(lines, "", stErr.Render("удалить сообщение? y/n"))
 	case m.focus == focusReply:
+		if m.editID > 0 {
+			lines = append(lines, stDim.Render("✎ редактирование"))
+		} else if m.replyTo.ID > 0 {
+			q := m.replyTo
+			name := q.Name
+			if name == "" {
+				name = "?"
+			}
+			lines = append(lines, stDim.Render(truncate("↳ ответ "+name+": "+q.Text, m.dialW-4)))
+		}
 		lines = append(lines, strings.Split(m.reply.View(), "\n")...)
 	case m.focus == focusSearch:
 		lines = append(lines, "", m.searchIn.View())
@@ -640,15 +652,18 @@ func (m Model) viewHelp() string {
 
 // footer: контекстная справка (shortHelp) + ошибки + флеш.
 func (m Model) footer() string {
-	left := m.help.ShortHelpView(m.shortHelp())
 	var right string
 	switch {
 	case m.loadErr != "":
-		right = stErr.Render("⚠ " + truncate(m.loadErr, m.width-lipgloss.Width(left)-6))
+		right = stErr.Render("⚠ " + truncate(m.loadErr, m.width-6))
 	case m.flashLine() != "":
 		right = m.flashLine()
 	case m.sending:
 		right = stDim.Render("отправка…")
+	}
+	left := m.help.ShortHelpView(m.shortHelp())
+	if max := m.width - lipgloss.Width(right) - 2; max > 0 && lipgloss.Width(left) > max {
+		left = truncate(left, max) // узкий терминал: подсказки уступают ошибкам
 	}
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
 	if gap < 1 {

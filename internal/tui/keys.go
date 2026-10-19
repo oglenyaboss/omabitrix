@@ -33,6 +33,16 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case ovConfirm:
+		// подтверждение удаления: y — удаляем, любая другая клавиша — закрыть
+		id := m.delID
+		m.overlay = ovNone
+		m.delID = 0
+		if msg.String() == "y" {
+			return m, m.deleteCmd(id)
+		}
+		return m, nil
+
 	case ovDeadline:
 		opts := deadlineOptions(m.api.now(), m.taskCard.Deadline)
 		switch msg.Code {
@@ -74,9 +84,14 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.focus == focusReply {
 		switch msg.String() {
 		case "esc", "ctrl+c":
-			if m.active != nil && m.reply.Value() != "" {
+			if m.editID > 0 {
+				// правка отменяется целиком: черновик не сохранять
+				m.editID = 0
+				m.reply.Reset()
+			} else if m.active != nil && m.reply.Value() != "" {
 				m.drafts[m.active.DialogID] = m.reply.Value()
 			}
+			m.replyTo = Message{}
 			m.focus = focusList
 			m.layout()
 			return m, nil
@@ -88,9 +103,17 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			// фокус остаётся — допечатанное переживёт ответ
 			text := strings.TrimSpace(m.reply.Value())
 			if text != "" && m.active != nil && !m.sending {
+				text = m.expandMentions(text)
 				m.reply.Reset()
 				m.sending = true
-				return m, m.sendCmd(text)
+				if m.editID > 0 {
+					// правка: текст уже заменили в истории, ждём ответ сервера
+					id := m.editID
+					m.editID = 0
+					m.applyEdit(id, text)
+					return m, m.updateCmd(id, text)
+				}
+				return m, m.sendCmd(text, m.replyTo.ID)
 			}
 		}
 		return m, cmd
@@ -155,7 +178,7 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.searchOff += 2 // один результат — две строки
 		case key.Matches(msg, km.Up):
 			m.searchOff -= 2
-		case key.Matches(msg, km.Reply), key.Matches(msg, km.Older):
+		case key.Matches(msg, km.Reply), key.Matches(msg, km.Older), key.Matches(msg, km.Select):
 			// ответ и догрузка истории поверх результатов не действуют
 		default:
 			handled = false
@@ -168,6 +191,19 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.searchOff = 0
 			}
 			return m, nil
+		}
+	}
+
+	// режим выделения сообщения: перехватывает всё, кроме «?» и ctrl+c
+	if m.sel >= 0 && m.active != nil && m.tab == tabChats {
+		if m.sel >= len(m.history) {
+			m.sel = -1
+		} else {
+			switch msg.String() {
+			case "?", "ctrl+c":
+			default:
+				return m.selKey(msg)
+			}
 		}
 	}
 
@@ -222,6 +258,11 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			m.replyActive()
 			return m, tea.Batch(cmd, m.reply.Focus())
+		}
+	case key.Matches(msg, km.Select):
+		if m.tab == tabChats && m.active != nil {
+			m.enterSel()
+			return m, nil
 		}
 	case key.Matches(msg, km.Filter):
 		if m.tab == tabChats && m.active != nil {
@@ -324,6 +365,81 @@ func (m *Model) openTaskChat() tea.Cmd {
 	m.openChatByDialog(id)
 	m.active.Title = m.taskCard.Title
 	return m.historyCmd(id, 0)
+}
+
+// selKey — клавиши режима выделения сообщения (v): навигация и действия
+// над выделенным; необработанные клавиши игнорируются.
+func (m Model) selKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, km.Down):
+		m.selStep(1)
+		m.selTo(m.sel)
+	case key.Matches(msg, km.Up):
+		m.selStep(-1)
+		m.selTo(m.sel)
+	case key.Matches(msg, km.Bottom):
+		for i := len(m.history) - 1; i >= 0; i-- {
+			if !m.history[i].System {
+				m.selTo(i)
+				break
+			}
+		}
+	case key.Matches(msg, km.Top):
+		for i := range m.history {
+			if !m.history[i].System {
+				m.selTo(i)
+				break
+			}
+		}
+	case key.Matches(msg, km.Back), key.Matches(msg, km.Quit):
+		m.selTo(-1)
+	case key.Matches(msg, km.ReplyQuote):
+		m.replyTo = m.history[m.sel]
+		m.sel = -1
+		m.replyActive()
+		return m, m.reply.Focus()
+	case key.Matches(msg, km.Edit):
+		if !m.history[m.sel].Mine {
+			m.flash = "можно только свои"
+			m.flashAt = m.api.now()
+			return m, nil
+		}
+		m.editID = m.history[m.sel].ID
+		m.reply.SetValue(m.history[m.sel].Text)
+		m.replyActive()
+		return m, m.reply.Focus()
+	case key.Matches(msg, km.Delete):
+		if !m.history[m.sel].Mine {
+			m.flash = "можно только свои"
+			m.flashAt = m.api.now()
+			return m, nil
+		}
+		m.delID = m.history[m.sel].ID
+		m.overlay = ovConfirm
+	case key.Matches(msg, km.Like):
+		// оптимистичный лайк, ответ сервера только подтвердит
+		msg0 := m.history[m.sel]
+		msg0.LikedByMe = !msg0.LikedByMe
+		if msg0.LikedByMe {
+			msg0.Likes++
+		} else if msg0.Likes > 0 {
+			msg0.Likes--
+		}
+		m.history[m.sel] = msg0
+		m.renderHistory()
+		m.scrollToSel()
+		return m, m.likeCmd(msg0.ID, msg0.LikedByMe)
+	case key.Matches(msg, km.Mention):
+		msg0 := m.history[m.sel]
+		if msg0.Name == "" {
+			return m, nil
+		}
+		m.reply.SetValue(m.reply.Value() + "@" + msg0.Name + " ")
+		m.mentions[msg0.Name] = msg0.AuthorID
+		m.replyActive()
+		return m, m.reply.Focus()
+	}
+	return m, nil
 }
 
 // switchTab — смена вкладки: фильтр вкладко-специфичен, сбрасываем;

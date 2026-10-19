@@ -5,35 +5,41 @@ import "charm.land/bubbles/v2/key"
 // keyMap — все хоткеи TUI одной картой: биндинги и для сверки ввода
 // (key.Matches), и для подсказок футера и «?».
 type keyMap struct {
-	Up        key.Binding // k, up
-	Down      key.Binding // j, down
-	Top       key.Binding // g
-	Bottom    key.Binding // G
-	Open      key.Binding // enter
-	Back      key.Binding // esc
-	Quit      key.Binding // q
-	ForceQuit key.Binding // ctrl+c
-	Tab1      key.Binding // 1
-	Tab2      key.Binding // 2
-	Tab3      key.Binding // 3
-	NextTab   key.Binding // tab
-	PrevTab   key.Binding // shift+tab
-	Help      key.Binding // ?
-	Refresh   key.Binding // R
-	Filter    key.Binding // /
-	Search    key.Binding // / поиск по истории диалога
-	Reply     key.Binding // r
-	Send      key.Binding // enter в ответе
-	Cancel    key.Binding // esc в ответе
-	Older     key.Binding // H
-	PageUp    key.Binding // pgup, b
-	PageDown  key.Binding // pgdown, f
-	Status    key.Binding // s
-	Deadline  key.Binding // d
-	TaskChat  key.Binding // c
-	ReadAll   key.Binding // A
-	Browser   key.Binding // o
-	Comment   key.Binding // r на карточке задачи
+	Up         key.Binding // k, up
+	Down       key.Binding // j, down
+	Top        key.Binding // g
+	Bottom     key.Binding // G
+	Open       key.Binding // enter
+	Back       key.Binding // esc
+	Quit       key.Binding // q
+	ForceQuit  key.Binding // ctrl+c
+	Tab1       key.Binding // 1
+	Tab2       key.Binding // 2
+	Tab3       key.Binding // 3
+	NextTab    key.Binding // tab
+	PrevTab    key.Binding // shift+tab
+	Help       key.Binding // ?
+	Refresh    key.Binding // R
+	Filter     key.Binding // /
+	Search     key.Binding // / поиск по истории диалога
+	Reply      key.Binding // r
+	Select     key.Binding // v
+	ReplyQuote key.Binding // r на выделенном
+	Edit       key.Binding // e на выделенном
+	Delete     key.Binding // D на выделенном
+	Like       key.Binding // l на выделенном
+	Mention    key.Binding // @ на выделенном
+	Send       key.Binding // enter в ответе
+	Cancel     key.Binding // esc в ответе
+	Older      key.Binding // H
+	PageUp     key.Binding // pgup, b
+	PageDown   key.Binding // pgdown, f
+	Status     key.Binding // s
+	Deadline   key.Binding // d
+	TaskChat   key.Binding // c
+	ReadAll    key.Binding // A
+	Browser    key.Binding // o
+	Comment    key.Binding // r на карточке задачи
 }
 
 var km = keyMap{
@@ -109,6 +115,30 @@ var km = keyMap{
 		key.WithKeys("r"),
 		key.WithHelp("r", "ответить"),
 	),
+	Select: key.NewBinding(
+		key.WithKeys("v"),
+		key.WithHelp("v", "выделить"),
+	),
+	ReplyQuote: key.NewBinding(
+		key.WithKeys("r"),
+		key.WithHelp("r", "ответить"),
+	),
+	Edit: key.NewBinding(
+		key.WithKeys("e"),
+		key.WithHelp("e", "изменить"),
+	),
+	Delete: key.NewBinding(
+		key.WithKeys("D"),
+		key.WithHelp("D", "удалить"),
+	),
+	Like: key.NewBinding(
+		key.WithKeys("l"),
+		key.WithHelp("l", "лайк"),
+	),
+	Mention: key.NewBinding(
+		key.WithKeys("@"),
+		key.WithHelp("@", "упомянуть"),
+	),
 	Send: key.NewBinding(
 		key.WithKeys("enter"),
 		key.WithHelp("enter", "отправить"),
@@ -162,8 +192,10 @@ func (m Model) shortHelp() []key.Binding {
 		return []key.Binding{km.Send, km.Cancel, km.Help}
 	case m.searchOn:
 		return []key.Binding{km.Up, km.Down, km.Back, km.Help}
+	case m.sel >= 0:
+		return []key.Binding{km.ReplyQuote, km.Edit, km.Delete, km.Like, km.Mention, km.Cancel, km.Help}
 	case m.active != nil:
-		return []key.Binding{km.Reply, km.Older, km.Search, km.PageUp, km.PageDown, km.Back, km.Help}
+		return []key.Binding{km.Reply, km.Select, km.Older, km.Search, km.PageUp, km.PageDown, km.Back, km.Help}
 	case m.tab == tabTasks && m.taskOpen:
 		b := []key.Binding{km.Status, km.Deadline}
 		if m.taskCard.ChatID > 0 {
@@ -186,8 +218,8 @@ func (m Model) fullHelp() [][]key.Binding {
 		{km.Up, km.Down, km.Top, km.Bottom, km.Open, km.PageUp, km.PageDown},
 		// вкладки
 		{km.Tab1, km.Tab2, km.Tab3, km.NextTab, km.PrevTab},
-		// чаты
-		{km.Reply, km.Send, km.Cancel, km.Older, km.Search},
+		// чаты (r — ответить, на выделенном — с цитатой)
+		{km.Select, km.ReplyQuote, km.Edit, km.Delete, km.Like, km.Mention, km.Send, km.Cancel, km.Older, km.Search},
 		// задачи
 		{km.Status, km.Deadline, km.TaskChat, km.Comment},
 		// уведы
