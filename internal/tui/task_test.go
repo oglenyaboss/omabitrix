@@ -148,8 +148,10 @@ func TestStageMenuMove(t *testing.T) {
 	if !strings.Contains(v, "● TODO") || !strings.Contains(v, "○ INBOX") {
 		t.Fatalf("меню стадий без маркеров:\n%s", v)
 	}
-	m3, _ := keyPress(m2, "j") // TODO — текущая, но-op в меню не нужен: вниз на DOING
-	m3, _ = keyPress(m3, "j")
+	if m2.statusIdx != 1 {
+		t.Fatalf("меню открылось на %d, хочу текущую TODO (1)", m2.statusIdx)
+	}
+	m3, _ := keyPress(m2, "j") // с текущей TODO вниз на DOING
 	mm, cmd := m3.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m4 := mm.(Model)
 	if cmd == nil {

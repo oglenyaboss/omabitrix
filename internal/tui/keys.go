@@ -409,6 +409,11 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			m.overlay = ovStatus
 			m.statusIdx = 0
+			for i, s := range m.api.StagesOf(m.taskCard.GroupID) {
+				if s.ID == m.taskCard.StageID {
+					m.statusIdx = i // меню стадий открывается на текущей
+				}
+			}
 			return m, nil
 		}
 	case key.Matches(msg, km.Deadline):
