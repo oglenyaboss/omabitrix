@@ -107,6 +107,7 @@ type Model struct {
 	ready         bool
 	flash         string
 	flashAt       time.Time
+	toast         *toastInfo // всплывашка «новое сообщение из другого чата»
 
 	pendingChat string
 	pendingTask int64
@@ -242,7 +243,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if msg.chats {
-			m.chats = m.api.snapshotChats()
+			// тост «новое сообщение»: счётчик чужого чата вырос при перечитке
+			old := map[string]int{}
+			for _, c := range m.chats {
+				old[c.DialogID] = c.Counter
+			}
+			fresh := m.api.snapshotChats()
+			if len(m.chats) > 0 {
+				for _, c := range fresh {
+					if c.Counter <= old[c.DialogID] {
+						continue
+					}
+					if m.active != nil && c.DialogID == m.active.DialogID {
+						continue
+					}
+					m.toast = &toastInfo{chat: c, at: m.api.now(), frame: m.frame}
+					break
+				}
+			}
+			m.chats = fresh
 		}
 		if msg.tasks {
 			m.tasks = m.api.snapshotTasks()
@@ -552,9 +571,9 @@ func (m *Model) layout() {
 	m.vp.SetWidth(m.dialW - 2)
 	replyRows := 2 // пустая + подсказка «r — ответить»
 	if m.focus == focusReply {
-		replyRows = 3
+		replyRows = 4 // разделитель «── ответ» + поле
 		if m.replyTo.ID > 0 || m.editID > 0 {
-			replyRows = 4 // + строка цитаты/правки над полем
+			replyRows = 5 // + строка цитаты
 		}
 	}
 	m.vp.SetHeight(m.bodyH - 2 - replyRows)
@@ -1131,10 +1150,11 @@ func mergeHistory(old, fresh []Message) []Message {
 }
 
 // renderHistory — tele-стиль: подряд идущие сообщения одного автора
-// группируются (имя один раз), mine — маркером без имени, даты по центру.
-// Выделенному (sel) — маркер в колонке отступа, сообщениям — цитата ответа
-// и сердечки лайков. потолок: prepend-догрузка может слить две серии одного
-// автора на границе — сдвиг скролла на 1–2 строки, приемлемо.
+// группируются (имя один раз), свои — прижаты вправо, даты по центру.
+// Выделенному (sel) — маркер в колонке отступа (у своих — в колонке 0),
+// сообщениям — цитата ответа и сердечки лайков. потолок: prepend-догрузка
+// может слить две серии одного автора на границе — сдвиг скролла на 1–2
+// строки, приемлемо.
 func (m *Model) renderHistory() {
 	if m.vp.Width() <= 0 {
 		return
@@ -1217,13 +1237,58 @@ func (m *Model) renderHistory() {
 				line++
 			}
 		case g.mine:
+			// свои сообщения прижаты вправо: перенос по словам на 2/3 ширины,
+			// правый край строки на колонке W; время и «›» — в конце последней
+			// строки первого сообщения группы; у выделенного маркер в колонке 0
+			tw := W * 2 / 3
+			if lim := W - 4; tw > lim {
+				tw = lim
+			}
+			if tw < 1 {
+				tw = 1
+			}
 			for i, hm := range g.msgs {
-				text := stBubbleMine.Render(hm.msg.Text) + hearts(hm.msg)
-				if i == 0 {
-					writeMsg(hm, stAccent.Render("›")+stDim.Render(" "+hm.msg.Time+" "), text)
-					continue
+				m.msgLine[hm.msg.ID] = line
+				edge := W
+				mark := ""
+				if hm.idx == m.sel {
+					edge -= 2 // место под «▌ » в колонке 0
+					mark = stCursor.Render("▌") + " "
 				}
-				writeMsg(hm, "", text)
+				tail, wrapW := "", tw
+				if i == 0 {
+					tail = stDim.Render("  "+hm.msg.Time) + " " + stAccent.Render("›")
+					// хвост должен остаться в пределах края — учитываем при переносе
+					if lim := edge - lipgloss.Width(tail); wrapW > lim {
+						wrapW = lim
+					}
+					if wrapW < 1 {
+						wrapW = 1
+					}
+				}
+				var lines []string
+				if q := m.quoteLine(hm.msg, wrapW); q != "" {
+					lines = append(lines, q)
+				}
+				wrapped := strings.Split(wordwrap.String(hm.msg.Text, wrapW), "\n")
+				for j, bl := range wrapped {
+					l := stBubbleMine.Render(bl)
+					if j == len(wrapped)-1 {
+						l += tail
+					}
+					lines = append(lines, l)
+				}
+				if h := hearts(hm.msg); h != "" {
+					lines = append(lines, h) // сердечки — справа под сообщением
+				}
+				for _, l := range lines {
+					pad := edge - lipgloss.Width(l)
+					if pad < 0 {
+						pad = 0
+					}
+					b.WriteString(mark + strings.Repeat(" ", pad) + l + "\n")
+					line++
+				}
 			}
 		default:
 			name := g.name

@@ -32,6 +32,10 @@ func (m Model) View() tea.View {
 			s += m.viewNotify()
 		}
 		s += "\n" + m.footer()
+		// тост нового сообщения поверх экрана на любой вкладке
+		if m.toastVisible() && m.width >= 50 && m.height >= 8 {
+			s = m.toastOverlay(s)
+		}
 	}
 	v := tea.NewView(s)
 	v.AltScreen = true
@@ -157,42 +161,54 @@ func (m Model) chatListPane() string {
 	return box(title, rows, m.listW, active)
 }
 
-// chatRows — две строки на чат: имя + счётчик справа; превью + время справа.
+// chatRows — две строки на чат: аватар + имя + время; превью + онлайн/счётчик.
+// Выбранный чат — целиком на фоне, строки добиты до listW.
 func (m Model) chatRows(c Chat, selected bool) []string {
 	inner := m.listW
 	marker := " "
 	if selected {
 		marker = stCursor.Render("▌")
 	}
-	dot := " "
-	if c.Online {
-		dot = stOnline.String()
-	}
-	name := c.Title
-	nameSt := lipgloss.NewStyle()
+	nameSt := stDim
 	if c.Counter > 0 {
 		nameSt = stChatUnread
 	}
 	if selected {
 		nameSt = stTitle
 	}
-	name = nameSt.Render(truncate(name, inner-9))
-	var badgeStr string
-	if c.Counter > 0 {
-		badgeStr = stBadge.Render(fmt.Sprint(c.Counter))
+	// маркер + аватар + зазор + имя + минимум 1 до времени
+	name := nameSt.Render(truncate(c.Title, max(inner-11, 1)))
+	timeS := stDim.Render(c.Time)
+	line1 := marker + avatar(c.Title, strings.HasPrefix(c.DialogID, "chat"), seedOf(c.DialogID)) +
+		" " + name
+	if gap := inner - lipgloss.Width(line1) - lipgloss.Width(timeS); gap > 0 {
+		line1 += strings.Repeat(" ", gap)
 	}
-	gap := inner - 3 - lipgloss.Width(name) - lipgloss.Width(badgeStr)
-	if gap < 1 {
-		gap = 1
-	}
-	line1 := marker + dot + " " + name + strings.Repeat(" ", gap) + badgeStr
+	line1 += timeS
 
-	preview := stDim.Render("   " + truncate(c.Preview, inner-10))
-	timeGap := inner - 4 - lipgloss.Width(preview) - lipgloss.Width(c.Time)
-	if timeGap < 1 {
-		timeGap = 1
+	right2 := ""
+	if c.Online {
+		right2 += stAccent.Render("●")
 	}
-	line2 := preview + strings.Repeat(" ", timeGap) + stDim.Render(c.Time)
+	if c.Counter > 0 {
+		if right2 != "" {
+			right2 += " "
+		}
+		right2 += stBadge.Render(fmt.Sprint(c.Counter))
+	}
+	// 5 пробелов — под маркер, аватар и зазор первой строки
+	preview := stDim.Render(truncate(c.Preview, max(inner-6-lipgloss.Width(right2), 1)))
+	line2 := "     " + preview
+	if gap := inner - 5 - lipgloss.Width(preview) - lipgloss.Width(right2); gap > 0 {
+		line2 += strings.Repeat(" ", gap)
+	}
+	line2 += right2
+
+	bg := lipgloss.NewStyle().Background(cSelBg)
+	if selected {
+		line1 = bg.Render(padTo(line1, inner))
+		line2 = bg.Render(padTo(line2, inner))
+	}
 	return []string{line1, line2}
 }
 
@@ -256,9 +272,16 @@ func (m Model) dialogPane() string {
 	case m.overlay == ovConfirm:
 		lines = append(lines, "", stErr.Render("удалить сообщение? y/n"))
 	case m.focus == focusReply:
+		// разделитель отделяет поле от истории: «── ответ» или «── правка»
+		sep := "── ответ "
 		if m.editID > 0 {
-			lines = append(lines, stDim.Render("✎ редактирование"))
-		} else if m.replyTo.ID > 0 {
+			sep = "── правка "
+		}
+		if fill := m.dialW - lipgloss.Width(sep); fill > 0 {
+			sep += strings.Repeat("─", fill)
+		}
+		lines = append(lines, stAccent.Render(sep))
+		if m.editID == 0 && m.replyTo.ID > 0 {
 			q := m.replyTo
 			name := q.Name
 			if name == "" {
