@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -78,6 +79,62 @@ func TestStatusOptions(t *testing.T) {
 	closed := statusOptions("5")
 	if closed[0].name != "переоткрыть" {
 		t.Errorf("для закрытой первый пункт: %+v", closed[0])
+	}
+}
+
+func TestTruncateWide(t *testing.T) {
+	s := truncate("🏠 КЛЕВЕР ХАБ 🟠 ЦИАН новое сообщение", 20)
+	if w := lipgloss.Width(s); w > 20 {
+		t.Fatalf("ширина %d > 20 ячеек: %q", w, s)
+	}
+	if !strings.HasSuffix(s, "…") {
+		t.Fatalf("нет эллипсиса: %q", s)
+	}
+}
+
+func TestViewFitsEmoji(t *testing.T) {
+	chats := make([]Chat, 6)
+	for i := range chats {
+		chats[i] = Chat{DialogID: fmt.Sprintf("d%d", i),
+			Title: "🏠 КЛЕВЕР ХАБ 🟠 ЦИАН", Preview: "🟠 новое сообщение в чате", Time: "14:15", Counter: 1}
+	}
+	m := viewModel(120, 36, chats, nil, nil, nil, nil)
+	m.tab = tabChats
+	for i, line := range strings.Split(m.View().Content, "\n") {
+		if lw := lipgloss.Width(line); lw > 120 {
+			t.Fatalf("строка %d шире 120: %d", i, lw)
+		}
+	}
+}
+
+func TestHistoryLoading(t *testing.T) {
+	m := viewModel(120, 36, nil, nil, nil, nil, nil)
+	m.historyLoading = true
+	m.renderHistory()
+	if v := m.vp.View(); !strings.Contains(v, "загрузка…") {
+		t.Fatalf("пустая история при загрузке без «загрузка…»:\n%q", v)
+	}
+	// ошибка первого запроса тоже снимает флаг
+	mm, _ := m.Update(historyMsg{err: errors.New("boom")})
+	if m2 := mm.(Model); m2.historyLoading {
+		t.Fatal("historyMsg с ошибкой не снял historyLoading")
+	}
+}
+
+func TestNoMoreMarker(t *testing.T) {
+	msgs := []Message{{ID: 1, Name: "А", Text: "привет", Time: "10:00", DayKey: "d", DayLabel: "сегодня"}}
+	m := viewModel(120, 36, nil, nil, nil, nil, msgs)
+	m.noMore = true
+	m.renderHistory()
+	v := m.vp.View()
+	if i, j := strings.Index(v, "начало переписки"), strings.Index(v, "привет"); i < 0 || i > j {
+		t.Fatalf("«начало переписки» не первой строкой:\n%s", v)
+	}
+	// H при noMore — флеш вместо повторного запроса
+	m.active = &Chat{DialogID: "d"}
+	m2, _ := keyPress(m, "H")
+	if m2.flash != "это начало переписки" {
+		t.Fatalf("H при noMore без флеша: %q", m2.flash)
 	}
 }
 

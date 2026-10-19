@@ -244,6 +244,10 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				first := m.history[0].ID
 				return m, m.historyCmd(m.active.DialogID, first)
 			}
+			if m.noMore {
+				m.flash = "это начало переписки"
+				m.flashAt = m.api.now()
+			}
 		}
 	}
 	return m, nil
@@ -264,8 +268,7 @@ func (m Model) enterKey() (tea.Model, tea.Cmd) {
 		if m.cursor < len(rows) {
 			id := rows[m.cursor].task.ID
 			m.taskIdx = m.cursor
-			m.cardReq = id
-			return m, m.loadTaskCardCmd(id)
+			return m, m.requestCard(id)
 		}
 	case tabNotify:
 		if m.cursor < len(m.notify) {

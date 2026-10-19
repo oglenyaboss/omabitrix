@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func (m Model) View() tea.View {
@@ -306,6 +307,12 @@ func (m Model) taskCardPane() string {
 	if cardInner < 4 {
 		cardInner = 4
 	}
+	if m.cardLoading {
+		// карточка ещё грузится: тело — заглушка, id берём из запроса,
+		// а не от старой карточки
+		title := paneTitle("", "задача · #"+fmt.Sprint(m.cardReq), "", m.tab == tabTasks)
+		return box(title, []string{stDim.Render("загрузка…")}, inner, m.tab == tabTasks)
+	}
 	menuH := 0
 	switch m.overlay {
 	case ovStatus:
@@ -561,11 +568,8 @@ func truncate(s string, n int) string {
 	if n <= 0 {
 		return s
 	}
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n-1]) + "…"
+	// ширина в ячейках: эмодзи (2 ячейки) не должны вылезать за n
+	return ansi.Truncate(s, n, "…")
 }
 
 func wordwrapWrap(text string, width, indent int) string {
