@@ -1,15 +1,21 @@
 package tui
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"omabitrix/internal/b24"
 )
 
 func viewModel(w, h int, chats []Chat, tasks []Task, notify []NotifyItem, active *Chat, msgs []Message) Model {
@@ -712,5 +718,222 @@ func TestReplyFromTaskCard(t *testing.T) {
 	m3, _ := keyPress(m, "r")
 	if m3.active != nil || m3.focus != focusList || m3.flash == "" {
 		t.Fatalf("r без чата задачи: флеш, без перехода; got active=%+v flash=%q", m3.active, m3.flash)
+	}
+}
+
+// / в открытом диалоге — фокус поиска; без диалога и на других вкладках — фильтр.
+func TestSearchFocusRouting(t *testing.T) {
+	chats := []Chat{{DialogID: "chat7", ChatID: 7, Title: "Анна"}}
+	active := chats[0]
+	m := viewModel(120, 36, chats, nil, nil, &active, nil)
+	m2, _ := keyPress(m, "/")
+	if m2.focus != focusSearch {
+		t.Fatalf("/ в диалоге: focus=%v, хочу focusSearch", m2.focus)
+	}
+	m3 := viewModel(120, 36, chats, nil, nil, nil, nil)
+	m4, _ := keyPress(m3, "/")
+	if m4.focus != focusFilter {
+		t.Fatalf("/ без диалога: focus=%v, хочу focusFilter", m4.focus)
+	}
+	m5 := viewModel(120, 36, chats, nil, nil, &active, nil)
+	m5.tab = tabTasks
+	m6, _ := keyPress(m5, "/")
+	if m6.focus != focusFilter {
+		t.Fatalf("/ на задачах: focus=%v, хочу focusFilter", m6.focus)
+	}
+}
+
+// Enter в поиске шлёт im.dialog.messages.search с числовым CHAT_ID,
+// ответ рендерится в панели: имя, текст, заголовок со счётчиком.
+func TestSearchEnterAndResults(t *testing.T) {
+	var mu sync.Mutex
+	var params map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/im.dialog.messages.search.json") {
+			mu.Lock()
+			params = nil
+			json.NewDecoder(r.Body).Decode(&params)
+			mu.Unlock()
+			fmt.Fprint(w, `{"result":{"messages":[{"id":5,"authorId":9,`+
+				`"date":"2026-10-19T10:00:00+03:00","text":"нашлось про проверка"}],`+
+				`"users":[{"id":9,"name":"Анна"}]}}`)
+			return
+		}
+		fmt.Fprint(w, `{"result":{}}`)
+	}))
+	defer srv.Close()
+
+	chats := []Chat{{DialogID: "chat7", ChatID: 7, Title: "Анна"}}
+	active := chats[0]
+	m := viewModel(120, 36, chats, nil, nil, &active, nil)
+	m.api = &API{C: b24.New(srv.URL), My: 75}
+	m.ctx = context.Background()
+
+	m2, _ := keyPress(m, "/")
+	if m2.focus != focusSearch {
+		t.Fatalf("/ в диалоге: focus=%v, хочу focusSearch", m2.focus)
+	}
+	m2.searchIn.SetValue("проверка")
+	mm, cmd := m2.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m3 := mm.(Model)
+	if !m3.searchOn || !m3.searching || m3.focus != focusList || cmd == nil {
+		t.Fatalf("enter: searchOn=%v searching=%v focus=%v cmd=%v",
+			m3.searchOn, m3.searching, m3.focus, cmd)
+	}
+	msg, ok := cmd().(searchMsg)
+	if !ok || msg.err != nil {
+		t.Fatalf("cmd вернул %T %+v", msg, msg)
+	}
+	mu.Lock()
+	if id, _ := params["CHAT_ID"].(float64); int64(id) != 7 {
+		t.Errorf("CHAT_ID: %v, хочу 7", params["CHAT_ID"])
+	}
+	if q, _ := params["SEARCH_MESSAGE"].(string); q != "проверка" {
+		t.Errorf("SEARCH_MESSAGE: %v", params["SEARCH_MESSAGE"])
+	}
+	mu.Unlock()
+
+	mm2, _ := m3.Update(msg)
+	m4 := mm2.(Model)
+	if len(m4.searchRes) != 1 || m4.searching {
+		t.Fatalf("результат не применён: res=%d searching=%v", len(m4.searchRes), m4.searching)
+	}
+	v := m4.View().Content
+	if !strings.Contains(v, "Анна") || !strings.Contains(ansi.Strip(v), "нашлось про проверка") {
+		t.Fatalf("результат не в кадре:\n%s", v)
+	}
+	if !strings.Contains(v, "поиск: проверка · 1") {
+		t.Fatalf("заголовок поиска не в кадре:\n%s", v)
+	}
+	for i, line := range strings.Split(v, "\n") {
+		if lw := lipgloss.Width(line); lw > 120 {
+			t.Fatalf("строка %d шире 120: %d", i, lw)
+		}
+	}
+	// скроллбар — ровной колонкой: у всех строк панели результатов с
+	// колонкой ширина префикса до неё одинакова
+	got := -1
+	for i, line := range strings.Split(m4.searchPane(), "\n") {
+		s := ansi.Strip(line)
+		if len(s) < 3 || !strings.HasPrefix(s, "│") {
+			continue // грани рамки
+		}
+		inner := s[2 : len(s)-2]
+		if !strings.Contains(inner, "│") {
+			continue // строка без колонки (подсказка)
+		}
+		pos := strings.LastIndex(inner, "│")
+		w := lipgloss.Width(s[:2+pos+1]) // префикс до колонки включительно
+		if got < 0 {
+			got = w
+		} else if w != got {
+			t.Fatalf("скроллбар плавает: строка %d col %d, хочу %d", i, w, got)
+		}
+	}
+	if got < 0 {
+		t.Fatal("скроллбара не видно в панели результатов")
+	}
+	// r поверх результатов не действует: фокус остаётся в списке
+	m5, cmd := keyPress(m4, "r")
+	if m5.focus != focusList || cmd != nil {
+		t.Fatalf("r в результатах: focus=%v cmd=%v", m5.focus, cmd)
+	}
+}
+
+// esc/q в результатах — назад к истории, диалог не закрывается.
+func TestSearchEscBack(t *testing.T) {
+	chats := []Chat{{DialogID: "chat7", ChatID: 7, Title: "Анна"}}
+	active := chats[0]
+	hist := []Message{{ID: 1, Name: "Анна", Text: "история диалога", Time: "10:00", DayKey: "d", DayLabel: "сегодня"}}
+	m := viewModel(120, 36, chats, nil, nil, &active, hist)
+	m.searchOn = true
+	m.searchQ = "запрос"
+	m.searchRes = []Message{{ID: 2, AuthorID: 9, Name: "Анна", Text: "находка запрос", Time: "10:05", DayKey: "d", DayLabel: "сегодня"}}
+
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m2 := mm.(Model)
+	if m2.searchOn || m2.active == nil || m2.active.DialogID != "chat7" {
+		t.Fatalf("esc: searchOn=%v active=%v", m2.searchOn, m2.active)
+	}
+	v := m2.View().Content
+	if strings.Contains(v, "поиск:") || !strings.Contains(v, "история диалога") {
+		t.Fatalf("esc не вернул историю:\n%s", v)
+	}
+	// q — тоже назад, а не выход из программы
+	m4, _ := keyPress(m, "q")
+	if m4.searchOn || m4.active == nil {
+		t.Fatalf("q: searchOn=%v active=%v", m4.searchOn, m4.active)
+	}
+}
+
+// j/k/pgup/pgdn листают окно результатов с клампами по краям.
+func TestSearchScroll(t *testing.T) {
+	res := make([]Message, 30)
+	for i := range res {
+		res[i] = Message{ID: int64(i), AuthorID: 9, Name: "Анна",
+			Text: fmt.Sprintf("нашлось совпадение номер %d", i), Time: "10:00", DayKey: "d", DayLabel: "сегодня"}
+	}
+	m := viewModel(120, 36, nil, nil, nil, &Chat{DialogID: "chat7", ChatID: 7}, nil)
+	m.searchOn = true
+	m.searchQ = "нашлось"
+	m.searchRes = res
+	if m.searchMaxOff() == 0 {
+		t.Fatal("все результаты влезли — прокрутку не проверить")
+	}
+	m2, _ := keyPress(m, "j")
+	if m2.searchOff != 2 {
+		t.Fatalf("j: off=%d, хочу 2", m2.searchOff)
+	}
+	m3, _ := keyPress(m2, "f")
+	if m3.searchOff != m3.searchMaxOff() {
+		t.Fatalf("f: off=%d, хочу кламп %d", m3.searchOff, m3.searchMaxOff())
+	}
+	m4, _ := keyPress(m3, "k")
+	if m4.searchOff != m3.searchMaxOff()-2 {
+		t.Fatalf("k: off=%d, хочу %d", m4.searchOff, m3.searchMaxOff()-2)
+	}
+	for i := 0; i < 20; i++ {
+		m4, _ = keyPress(m4, "k")
+	}
+	if m4.searchOff != 0 {
+		t.Fatalf("кламп верха: off=%d", m4.searchOff)
+	}
+	for i, line := range strings.Split(m3.View().Content, "\n") {
+		if lw := lipgloss.Width(line); lw > 120 {
+			t.Fatalf("строка %d шире 120: %d", i, lw)
+		}
+	}
+}
+
+// Ответ для сменившегося диалога игнорируется целиком.
+func TestSearchStaleDialogDropped(t *testing.T) {
+	active := &Chat{DialogID: "chat7", ChatID: 7}
+	m := viewModel(120, 36, nil, nil, nil, active, nil)
+	mm, _ := m.Update(searchMsg{dialogID: "chat1", q: "проверка", rows: []Message{{ID: 1, Text: "чужое"}}})
+	m2 := mm.(Model)
+	if len(m2.searchRes) != 0 || m2.searchQ != "" || m2.searching {
+		t.Fatalf("чужой ответ применился: res=%v q=%q", m2.searchRes, m2.searchQ)
+	}
+}
+
+// Короткий запрос: портал не дёргается, ошибка — флешем, панель — история.
+func TestSearchMinLenFlash(t *testing.T) {
+	active := &Chat{DialogID: "chat7", ChatID: 7}
+	m := viewModel(120, 36, nil, nil, nil, active, nil)
+	m.focus = focusSearch
+	m.searchIn.SetValue("ок")
+	mm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m2 := mm.(Model)
+	if cmd == nil {
+		t.Fatal("enter не дал команду")
+	}
+	msg, ok := cmd().(searchMsg)
+	if !ok || msg.err == nil || msg.err.Error() != "минимум 3 символа" {
+		t.Fatalf("cmd вернул %T %+v", msg, msg)
+	}
+	mm3, _ := m2.Update(msg)
+	m3 := mm3.(Model)
+	if m3.searchOn || m3.flash != "минимум 3 символа" {
+		t.Fatalf("searchOn=%v flash=%q", m3.searchOn, m3.flash)
 	}
 }

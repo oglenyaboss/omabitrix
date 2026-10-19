@@ -181,16 +181,119 @@ func (m Model) dialogPane() string {
 		return box(paneTitle("", "диалог", "", false),
 			[]string{"", stDim.Render(" enter — открыть чат")}, m.dialW, false)
 	}
+	if m.searchOn {
+		return m.searchPane()
+	}
 	hist := joinScrollbar(m.vp.View(),
 		scrollbarColumn(m.vp.TotalLineCount(), m.vp.Height(), m.vp.YOffset()), m.vp.Height())
 	lines := strings.Split(hist, "\n")
-	if m.focus == focusReply {
+	switch {
+	case m.focus == focusReply:
 		lines = append(lines, strings.Split(m.reply.View(), "\n")...)
-	} else {
+	case m.focus == focusSearch:
+		lines = append(lines, "", m.searchIn.View())
+	default:
 		lines = append(lines, "", stDim.Render(" r — ответить · колесо — скролл"))
 	}
 	title := paneTitle("", truncate(m.active.Title, m.dialW-8), unreadExtra(m.active.Counter), m.focus == focusReply)
 	return box(title, lines, m.dialW, m.focus == focusReply)
+}
+
+// searchPane — результаты поиска вместо истории: окно строк по высоте vp
+// со своим скроллбаром, счёт/статус — в заголовке.
+func (m Model) searchPane() string {
+	all := m.searchView()
+	total := len(all)
+	h := m.vp.Height()
+	off := m.searchOff
+	if max := total - h; off > max {
+		off = max
+	}
+	if off < 0 {
+		off = 0
+	}
+	end := off + h
+	if end > total {
+		end = total
+	}
+	// строки добиваются до ширины окна: колонка скроллбара не липнет
+	// к тексту, а стоит у правого края (как viewport у истории);
+	// пустые филлеры до высоты — тоже, у них та же колонка
+	win := make([]string, 0, h)
+	for _, l := range all[off:end] {
+		win = append(win, padTo(l, m.vp.Width()))
+	}
+	for len(win) < h {
+		win = append(win, padTo("", m.vp.Width()))
+	}
+	lines := strings.Split(joinScrollbar(strings.Join(win, "\n"),
+		scrollbarColumn(total, h, off), h), "\n")
+	lines = append(lines, "", stDim.Render(" esc — назад к истории"))
+	sub := fmt.Sprint(len(m.searchRes))
+	switch {
+	case m.searching:
+		sub = "ищу…"
+	case len(m.searchRes) == 0:
+		sub = "ничего не найдено"
+	}
+	title := paneTitle("", "поиск: "+m.searchQ+" · "+sub, "", m.focus == focusReply)
+	return box(title, lines, m.dialW, m.focus == focusReply)
+}
+
+// searchView — все строки результатов: «Имя · день время» и текст с
+// подсветкой первого вхождения запроса (свои/чужие одинаково).
+func (m Model) searchView() []string {
+	W := m.vp.Width() - 1
+	if W < 10 {
+		W = 10
+	}
+	out := make([]string, 0, len(m.searchRes)*2)
+	for _, msg := range m.searchRes {
+		name := msg.Name
+		if name == "" {
+			name = "?"
+		}
+		head := authorStyle(msg.AuthorID).Render(name) +
+			stDim.Render(" · "+msg.DayLabel+" "+msg.Time)
+		out = append(out, head, indentWrap(searchHighlight(msg.Text, m.searchQ), W, 2))
+	}
+	return out
+}
+
+// padTo — строка ровно w ячеек: короткая добивается пробелом, длинная режется.
+func padTo(s string, w int) string {
+	if pad := w - lipgloss.Width(s); pad > 0 {
+		return s + strings.Repeat(" ", pad)
+	}
+	return ansi.Truncate(s, w, "")
+}
+
+// searchMaxOff — максимальный строковый офсет окна результатов (0 — всё влезло).
+func (m Model) searchMaxOff() int {
+	max := len(m.searchView()) - m.vp.Height()
+	if max < 0 {
+		return 0
+	}
+	return max
+}
+
+// searchHighlight — первое вхождение запроса акцентом, без учёта регистра.
+func searchHighlight(text, q string) string {
+	if q == "" {
+		return text
+	}
+	low, lq := strings.ToLower(text), strings.ToLower(q)
+	i := strings.Index(low, lq)
+	if i < 0 {
+		return text
+	}
+	ri := len([]rune(low[:i])) // байтовый индекс → руны (кириллица)
+	rq := len([]rune(lq))
+	r := []rune(text)
+	if ri+rq > len(r) {
+		return text
+	}
+	return string(r[:ri]) + stAccent.Render(string(r[ri:ri+rq])) + string(r[ri+rq:])
 }
 
 // ---- задачи: список (или список + карточка правой панелью)
