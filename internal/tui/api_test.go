@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -33,6 +34,24 @@ func TestBucketsRFC3339(t *testing.T) {
 	}
 	if len(b.Later) != 1 || b.NoDate[0].ID != 5 {
 		t.Errorf("later/nodate: %+v %+v", b.Later, b.NoDate)
+	}
+}
+
+// Рольные задачи идут в свои корзины без дедлайн-раскладки; «делаю» —
+// по прежней логике (пустой Role тоже).
+func TestBucketsRoles(t *testing.T) {
+	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	b := Buckets([]Task{
+		{ID: 1, Role: "do", Deadline: "2026-10-19 18:00:00"},
+		{ID: 2, Role: "help"},
+		{ID: 3, Role: "watch"},
+		{ID: 4, Deadline: ""},
+	}, time.UTC, now)
+	if len(b.Help) != 1 || b.Help[0].ID != 2 || len(b.Watch) != 1 || b.Watch[0].ID != 3 {
+		t.Errorf("help/watch: %+v %+v", b.Help, b.Watch)
+	}
+	if len(b.Today) != 1 || b.Today[0].ID != 1 || len(b.NoDate) != 1 || b.NoDate[0].ID != 4 {
+		t.Errorf("обычные корзины: today=%+v nodate=%+v", b.Today, b.NoDate)
 	}
 }
 
@@ -120,6 +139,79 @@ func TestReadNotifyAPI(t *testing.T) {
 	}
 	if a.allNotify[0].Unread || !a.allNotify[1].Unread {
 		t.Errorf("флаги: %+v", a.allNotify)
+	}
+}
+
+// OpenTasks — один batch из трёх tasks.task.list (RESPONSIBLE_ID/ACCOMPLICE/
+// AUDITOR): дубль между ролями берётся с приоритетом do, newCommentsCount —
+// бейдж новых комментариев.
+func TestOpenTasksRolesBatch(t *testing.T) {
+	var mu sync.Mutex
+	var cmds map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/batch.json") {
+			t.Errorf("метод: %s, хочу batch", r.URL.Path)
+		}
+		var body struct {
+			CMD map[string]string `json:"cmd"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		cmds = body.CMD
+		mu.Unlock()
+		res := map[string]any{
+			"do": map[string]any{"tasks": []any{
+				map[string]any{"id": 7, "title": "делаю", "status": "2",
+					"deadline": "2026-10-19 18:00:00", "newCommentsCount": 3},
+			}},
+			"help": map[string]any{"tasks": []any{
+				map[string]any{"id": 7, "title": "делаю", "status": "2", "deadline": "2026-10-19 18:00:00"},
+				map[string]any{"id": 8, "title": "помогаю", "status": "2", "deadline": "2026-10-19 18:00:00"},
+			}},
+			"watch": map[string]any{"tasks": []any{
+				map[string]any{"id": 7, "title": "делаю", "status": "2", "deadline": "2026-10-19 18:00:00"},
+			}},
+		}
+		b, _ := json.Marshal(map[string]any{"result": res, "result_error": []any{}})
+		fmt.Fprintf(w, `{"result":%s}`, b)
+	}))
+	defer srv.Close()
+
+	a := &API{C: b24.New(srv.URL), My: 75}
+	tasks, err := a.OpenTasks(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("задач %d, хочу 2 без дублей: %+v", len(tasks), tasks)
+	}
+	if tasks[0].ID != 7 || tasks[0].Role != "do" || tasks[0].NewComments != 3 {
+		t.Errorf("дубль 7: %+v, хочу Role do и NewComments 3", tasks[0])
+	}
+	if tasks[1].ID != 8 || tasks[1].Role != "help" {
+		t.Errorf("help-задача: %+v", tasks[1])
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	// три команды batch: фильтр своей роли + общий !STATUS/select/order
+	fields := map[string]string{"do": "RESPONSIBLE_ID", "help": "ACCOMPLICE", "watch": "AUDITOR"}
+	for key, field := range fields {
+		q, err := url.ParseQuery(strings.TrimPrefix(cmds[key], "tasks.task.list?"))
+		if err != nil {
+			t.Fatalf("%s: %v (%q)", key, err, cmds[key])
+		}
+		if got := q.Get("filter[" + field + "]"); got != "75" {
+			t.Errorf("%s: filter[%s]=%q, хочу 75", key, field, got)
+		}
+		if q.Get("filter[!STATUS][0]") != "5" {
+			t.Errorf("%s: нет !STATUS 5: %v", key, q)
+		}
+		if q.Get("order[DEADLINE]") != "asc" {
+			t.Errorf("%s: order: %v", key, q)
+		}
+		if sel := q.Get("select[0]"); !strings.Contains(sel, "NEW_COMMENTS_COUNT") || !strings.Contains(sel, "CHAT_ID") {
+			t.Errorf("%s: select: %q", key, sel)
+		}
 	}
 }
 

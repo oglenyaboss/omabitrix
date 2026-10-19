@@ -232,20 +232,36 @@ func (m Model) taskListW() int {
 	return m.width - 4
 }
 
-// taskRows — две строки на задачу: титул; дедлайн dim.
+// taskRows — две строки на задачу: титул (+ бейдж новых комментариев справа);
+// дедлайн dim.
 func (m Model) taskRows(r taskRow, selected bool) []string {
 	inner := m.taskListW()
 	marker := " "
 	if selected {
 		marker = stCursor.Render("▌")
 	}
+	var badgeStr string
+	if r.task.NewComments > 0 {
+		badgeStr = stBadge.Render(fmt.Sprint(r.task.NewComments))
+	}
+	tw := inner - 2 // маркер и отступ перед титулом
+	if badgeStr != "" {
+		tw -= lipgloss.Width(badgeStr) + 1 // бейдж и зазор до него
+	}
 	title := r.task.Title
 	if r.kind == "overdue" {
-		title = stUrgent.Render(truncate(title, inner-2))
+		title = stUrgent.Render(truncate(title, tw))
 	} else {
-		title = truncate(title, inner-2)
+		title = truncate(title, tw)
 	}
 	line1 := marker + " " + title
+	if badgeStr != "" {
+		gap := inner - 2 - lipgloss.Width(title) - lipgloss.Width(badgeStr)
+		if gap < 1 {
+			gap = 1
+		}
+		line1 += strings.Repeat(" ", gap) + badgeStr
+	}
 	line2 := ""
 	if r.task.Deadline != "" {
 		line2 = stDim.Render("     󰔞 " + deadlineShort(r.task.Deadline))
@@ -301,6 +317,10 @@ func sectionHeader(kind string, b TaskBuckets, w int) string {
 		s = stBold.Render(fmt.Sprintf("СЕГОДНЯ · %d", len(b.Today)))
 	case "later":
 		s = stBoldDim.Render("ПОЗЖЕ")
+	case "help":
+		s = stBoldDim.Render(fmt.Sprintf("ПОМОГАЮ · %d", len(b.Help)))
+	case "watch":
+		s = stBoldDim.Render(fmt.Sprintf("НАБЛЮДАЮ · %d", len(b.Watch)))
 	default:
 		s = stBoldDim.Render("БЕЗ ДЕДЛАЙНА")
 	}

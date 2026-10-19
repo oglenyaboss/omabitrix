@@ -545,6 +545,32 @@ func TestFilterAnyTab(t *testing.T) {
 	}
 }
 
+// Бейдж новых комментариев: число справа в строке задачи, строка в ширину.
+func TestTaskBadgeInView(t *testing.T) {
+	tasks := []Task{{ID: 1, Title: "задача с бейджем", NewComments: 4}}
+	m := viewModel(120, 36, nil, tasks, nil, nil, nil)
+	m.tab = tabTasks
+	v := m.View().Content
+	var badgeLine string
+	for _, l := range strings.Split(v, "\n") {
+		if strings.Contains(ansi.Strip(l), "задача с бейджем") {
+			badgeLine = l
+			break
+		}
+	}
+	if badgeLine == "" {
+		t.Fatal("строки задачи нет в кадре")
+	}
+	if !strings.Contains(ansi.Strip(badgeLine), "4") {
+		t.Fatalf("бейджа «4» нет в строке задачи: %q", badgeLine)
+	}
+	for i, line := range strings.Split(v, "\n") {
+		if lw := lipgloss.Width(line); lw > 120 {
+			t.Fatalf("строка %d шире 120: %d", i, lw)
+		}
+	}
+}
+
 func TestFlatTasksFilter(t *testing.T) {
 	tasks := []Task{
 		{ID: 1, Title: "Обновить фид", Deadline: "2026-10-18 10:00:00"},
