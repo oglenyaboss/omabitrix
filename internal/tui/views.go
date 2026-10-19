@@ -159,6 +159,23 @@ func (m Model) chatWindow(vc []Chat) (start, end, filterRows int) {
 	return start, end, filterRows
 }
 
+// filterRows — высота строки фильтра в панели списка: 2 (строка + пустая),
+// как в панели чатов; 0 — когда фильтра нет.
+func (m Model) filterRows() int {
+	if m.focus == focusFilter || m.filter != "" {
+		return 2
+	}
+	return 0
+}
+
+// filterLine — строка фильтра для панели списка: инпут под фокусом, иначе эхо.
+func (m Model) filterLine() []string {
+	if m.focus == focusFilter {
+		return []string{m.filterIn.View(), ""}
+	}
+	return []string{stDim.Render("фильтр: "+m.filter), ""}
+}
+
 func (m Model) dialogPane() string {
 	if m.active == nil {
 		return box(paneTitle("", "диалог", "", false),
@@ -190,6 +207,9 @@ func (m Model) taskListPane() string {
 	rows := m.flatTasks()
 	start, end, _ := m.taskWindow(rows)
 	out := make([]string, 0, (end-start)*2+4)
+	if m.filterRows() > 0 {
+		out = append(out, m.filterLine()...)
+	}
 	var lastKind string
 	for i := start; i < end; i++ {
 		if rows[i].kind != lastKind {
@@ -236,7 +256,7 @@ func (m Model) taskRows(r taskRow, selected bool) []string {
 // taskWindow — окно видимых задач и карта строк (индекс задачи или -1 = секция).
 // Высоты: заголовок секции 1 строка, задача 2 строки; единая точка для рендера и мыши.
 func (m Model) taskWindow(rows []taskRow) (start, end int, lineMap []int) {
-	total := m.bodyH - 2
+	total := m.bodyH - 2 - m.filterRows()
 	if total < 3 {
 		total = 3
 	}
@@ -405,9 +425,12 @@ func statusName(code string) string {
 // ---- уведы
 
 func (m Model) viewNotify() string {
-	rows := m.notify
+	rows := m.visibleNotify()
 	start, end := m.notifyWindow(len(rows))
 	out := make([]string, 0, (end-start)*2+2)
+	if m.filterRows() > 0 {
+		out = append(out, m.filterLine()...)
+	}
 	if len(rows) == 0 {
 		out = append(out, stDim.Render(" — уведомлений нет — (R — обновить) "))
 	}
@@ -428,7 +451,7 @@ func countUnread(rows []NotifyItem) int {
 }
 
 func (m Model) notifyWindow(n int) (start, end int) {
-	capacity := (m.bodyH - 2) / 2
+	capacity := (m.bodyH - 2 - m.filterRows()) / 2
 	if capacity < 1 {
 		capacity = 1
 	}

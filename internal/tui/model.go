@@ -476,10 +476,11 @@ func (m Model) cursorKey() string {
 		}
 		return strconv.FormatInt(rows[m.cursor].task.ID, 10)
 	default:
-		if m.cursor < 0 || m.cursor >= len(m.notify) {
+		vn := m.visibleNotify()
+		if m.cursor < 0 || m.cursor >= len(vn) {
 			return ""
 		}
-		return m.notify[m.cursor].ID
+		return vn[m.cursor].ID
 	}
 }
 
@@ -511,7 +512,7 @@ func (m *Model) restoreCursor(key string) {
 			}
 		}
 	default:
-		for i, n := range m.notify {
+		for i, n := range m.visibleNotify() {
 			if n.ID == key {
 				m.cursor = i
 				return
@@ -716,16 +717,17 @@ func (m Model) mouseLeft(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		}
 		rows := m.flatTasks()
 		_, _, lineMap := m.taskWindow(rows)
-		idx := msg.Y - 1
+		idx := msg.Y - 1 - m.filterRows()
 		if idx < 0 || idx >= len(lineMap) || lineMap[idx] < 0 {
 			return m, nil
 		}
 		m.cursor = lineMap[idx]
 		return m.enterKey()
 	case tabNotify:
-		start, _ := m.notifyWindow(len(m.notify))
-		idx := (msg.Y - 1) / 2
-		if idx < 0 || start+idx >= len(m.notify) {
+		vn := m.visibleNotify()
+		start, _ := m.notifyWindow(len(vn))
+		idx := (msg.Y - 1 - m.filterRows()) / 2
+		if idx < 0 || start+idx >= len(vn) {
 			return m, nil
 		}
 		m.cursor = start + idx
@@ -758,7 +760,7 @@ func (m *Model) visibleCount() int {
 	case tabTasks:
 		return len(m.flatTasks())
 	default:
-		return len(m.notify)
+		return len(m.visibleNotify())
 	}
 }
 
@@ -781,7 +783,47 @@ func (m *Model) flatTasks() []taskRow {
 	for _, t := range m.buckets.NoDate {
 		out = append(out, taskRow{t, "nodate"})
 	}
+	if m.tab == tabTasks && m.filter != "" {
+		// фильтр по титулу как в чатах; пустые корзины просто исчезают —
+		// заголовок секции рисуется только перед её задачами
+		f := strings.ToLower(m.filter)
+		kept := make([]taskRow, 0, len(out))
+		for _, r := range out {
+			if strings.Contains(strings.ToLower(r.task.Title), f) {
+				kept = append(kept, r)
+			}
+		}
+		out = kept
+	}
 	return out
+}
+
+// visibleNotify — видимый список уведов: фильтр по Title/Text без учёта
+// регистра, только на вкладке уведов (как фильтр чатов).
+func (m *Model) visibleNotify() []NotifyItem {
+	if m.tab != tabNotify || m.filter == "" {
+		return m.notify
+	}
+	f := strings.ToLower(m.filter)
+	out := make([]NotifyItem, 0, len(m.notify))
+	for _, n := range m.notify {
+		if strings.Contains(strings.ToLower(n.Title), f) ||
+			strings.Contains(strings.ToLower(n.Text), f) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// clearNotifyUnread — погасить Unread в полном списке по ID: индекс
+// отфильтрованного списка не совпадает с исходным.
+func (m *Model) clearNotifyUnread(id string) {
+	for i := range m.notify {
+		if m.notify[i].ID == id {
+			m.notify[i].Unread = false
+			return
+		}
+	}
 }
 
 // cardMatchesCursor — s/d безопасны только над карточкой той задачи,
