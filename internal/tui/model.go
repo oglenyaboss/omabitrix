@@ -246,7 +246,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.tasks {
 			m.tasks = m.api.snapshotTasks()
-			m.buckets = Buckets(m.tasks, m.api.C.ServerLoc(), m.api.now())
+			m.buckets = Buckets(m.tasks, m.srvLoc(), m.api.now())
 		}
 		if msg.notify {
 			m.notify = m.api.snapshotNotify()
@@ -1402,6 +1402,14 @@ func indentWrap(text string, width, indent int) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// srvLoc — зона портала для дедлайнов; без клиента (тесты) — UTC.
+func (m Model) srvLoc() *time.Location {
+	if m.api == nil || m.api.C == nil {
+		return time.UTC
+	}
+	return m.api.C.ServerLoc()
 }
 
 func (m *Model) flashLine() string {
