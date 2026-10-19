@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"time"
 
@@ -181,6 +182,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case reloadMsg:
 		m.ready = true
+		key := m.cursorKey() // до замены списков: курсор вернём на тот же элемент
+		cardKey := ""        // задача открытой карточки — taskIdx следует за курсором
+		if m.tab == tabTasks {
+			if rows := m.flatTasks(); m.taskIdx >= 0 && m.taskIdx < len(rows) {
+				cardKey = strconv.FormatInt(rows[m.taskIdx].task.ID, 10)
+			}
+		}
 		if msg.chats {
 			m.chats = m.api.snapshotChats()
 		}
@@ -203,6 +211,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.loadErr = strings.Join(msg.errs, "; ")
 		} else {
 			m.loadErr = ""
+		}
+		m.restoreCursor(key)
+		if key != "" && key == cardKey {
+			m.taskIdx = m.cursor
 		}
 		m.clampCursors()
 		m.layout()
@@ -248,7 +260,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// тик-обновление не должно вырывать юзера из истории: к низу —
 				// только если он и был у низа
 				atBottom := m.vp.AtBottom() || len(m.history) == 0
-				m.history = msg.rows
+				m.history = mergeHistory(m.history, msg.rows)
 				m.renderHistory()
 				if atBottom {
 					m.vp.GotoBottom()
@@ -404,6 +416,67 @@ func (m *Model) clampCursors() {
 	}
 	if m.cursor < 0 {
 		m.cursor = 0
+	}
+}
+
+// cursorKey — стабильный ключ элемента под курсором: индексы плывут при
+// пересортировке (непрочитанные вверх), ключ переживает перечитку.
+func (m Model) cursorKey() string {
+	switch m.tab {
+	case tabChats:
+		vc := m.visibleChats()
+		if m.cursor < 0 || m.cursor >= len(vc) {
+			return ""
+		}
+		return vc[m.cursor].DialogID
+	case tabTasks:
+		rows := m.flatTasks()
+		if m.cursor < 0 || m.cursor >= len(rows) {
+			return ""
+		}
+		return strconv.FormatInt(rows[m.cursor].task.ID, 10)
+	default:
+		if m.cursor < 0 || m.cursor >= len(m.notify) {
+			return ""
+		}
+		return m.notify[m.cursor].ID
+	}
+}
+
+// restoreCursor — курсор на тот же элемент в перечитанном списке; не нашли —
+// ничего, дальше подрежет clampCursors. Заголовков корзин в flatTasks нет
+// (они только в lineMap рендера), курсор всегда стоит на задаче.
+func (m *Model) restoreCursor(key string) {
+	if key == "" {
+		return
+	}
+	switch m.tab {
+	case tabChats:
+		for i, c := range m.visibleChats() {
+			if c.DialogID == key {
+				m.cursor = i
+				return
+			}
+		}
+	case tabTasks:
+		id, err := strconv.ParseInt(key, 10, 64)
+		if err != nil {
+			return
+		}
+		rows := m.flatTasks()
+		for i, r := range rows {
+			if r.task.ID == id {
+				m.cursor = i
+				return
+			}
+		}
+	default:
+		for i, n := range m.notify {
+			if n.ID == key {
+				m.cursor = i
+				return
+			}
+		}
 	}
 }
 
@@ -701,6 +774,25 @@ func (m *Model) openHistory() {
 	m.history = nil
 	m.noMore = false
 	m.renderHistory()
+}
+
+// mergeHistory — тик-обновление не должно стирать догруженное по H старьё:
+// всё старее первой строки свежей страницы берём из текущего списка.
+func mergeHistory(old, fresh []Message) []Message {
+	if len(fresh) == 0 {
+		return old
+	}
+	first := fresh[0].ID
+	var tail []Message
+	for _, msg := range old {
+		if msg.ID < first {
+			tail = append(tail, msg)
+		}
+	}
+	out := make([]Message, 0, len(fresh)+len(tail))
+	out = append(out, tail...)
+	out = append(out, fresh...)
+	return out
 }
 
 // renderHistory — tele-стиль: подряд идущие сообщения одного автора
