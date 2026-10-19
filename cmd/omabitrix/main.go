@@ -32,7 +32,7 @@ func main() {
 
 	client := b24.New(cfg.WebhookURL())
 	client.RateLimit = 500 * time.Millisecond
-	api := &tui.API{C: client, My: int64(cfg.UserID)}
+	api := &tui.API{C: client, My: int64(cfg.UserID), Portal: cfg.Portal}
 
 	ctx := context.Background()
 	m := tui.NewModel(api, ctx)

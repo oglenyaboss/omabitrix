@@ -387,6 +387,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case browserMsg:
+		if msg.err != nil {
+			m.loadErr = "браузер: " + msg.err.Error()
+			return m, nil
+		}
+		m.flash = "открыто в браузере"
+		m.flashAt = m.api.now()
+		return m, nil
+
 	case tea.KeyPressMsg:
 		if !m.ready {
 			// «любая клавиша — пропустить»: входим с тем, что загрузилось,
