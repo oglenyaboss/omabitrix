@@ -272,10 +272,19 @@ func (m Model) enterKey() (tea.Model, tea.Cmd) {
 			n := m.notify[m.cursor]
 			if n.TaskID > 0 {
 				m.tab = tabTasks
-				return m, m.loadTaskCardCmd(n.TaskID)
+				cmd := m.loadTaskCardCmd(n.TaskID)
+				if n.Unread {
+					m.notify[m.cursor].Unread = false
+					return m, tea.Batch(cmd, m.readNotifyCmd(n.ID))
+				}
+				return m, cmd
 			}
 			m.flash = "у уведомления нет перехода"
 			m.flashAt = m.api.now()
+			if n.Unread {
+				m.notify[m.cursor].Unread = false
+				return m, m.readNotifyCmd(n.ID)
+			}
 		}
 	}
 	return m, nil

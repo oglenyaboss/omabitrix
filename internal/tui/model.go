@@ -234,6 +234,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.noMore = msg.noMore
+		var read tea.Cmd
 		if m.active != nil && msg.dialogID == m.active.DialogID {
 			if msg.prepend {
 				// догрузка старых: держим позицию (YOffset += прирост)
@@ -253,9 +254,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if atBottom {
 					m.vp.GotoBottom()
 				}
+				// открыл чат — прочитал: гасим счётчик локально и на портале
+				if len(msg.rows) > 0 && m.active.Counter > 0 {
+					m.active.Counter = 0
+					for i := range m.chats {
+						if m.chats[i].DialogID == msg.dialogID {
+							m.chats[i].Counter = 0
+							break
+						}
+					}
+					read = m.readDialogCmd(msg.dialogID, msg.rows[len(msg.rows)-1].ID)
+				}
 			}
 		}
-		return m, nil
+		return m, read
 
 	case sentMsg:
 		m.sending = false
@@ -333,6 +345,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.notify = m.api.snapshotNotify()
 		m.flash = "✓ всё прочитано"
 		m.flashAt = m.api.now()
+		return m, nil
+
+	case readMsg:
+		if msg.err != nil {
+			m.loadErr = "не прочитано: " + msg.err.Error()
+		}
 		return m, nil
 
 	case tea.KeyPressMsg:
@@ -518,6 +536,19 @@ type readAllMsg struct{ err error }
 func (m Model) readAllCmd() tea.Cmd {
 	api, ctx := m.api, m.ctx
 	return func() tea.Msg { return readAllMsg{err: api.ReadAllNotify(ctx)} }
+}
+
+// readMsg — ответ ReadDialog/ReadNotify: при ошибке показываем loadErr.
+type readMsg struct{ err error }
+
+func (m Model) readDialogCmd(dialogID string, lastID int64) tea.Cmd {
+	api, ctx := m.api, m.ctx
+	return func() tea.Msg { return readMsg{err: api.ReadDialog(ctx, dialogID, lastID)} }
+}
+
+func (m Model) readNotifyCmd(id string) tea.Cmd {
+	api, ctx := m.api, m.ctx
+	return func() tea.Msg { return readMsg{err: api.ReadNotify(ctx, id)} }
 }
 
 // mouseClick — клик открывает элемент списка (колесо — отдельное событие).

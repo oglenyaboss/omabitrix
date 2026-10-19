@@ -2,10 +2,12 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -79,4 +81,95 @@ func countReloads(c tea.Cmd) map[string]int {
 		}
 	}
 	return out
+}
+
+// История загрузилась в открытый непрочитанный чат → счётчик гаснет локально
+// и уходит im.dialog.read (MESSAGE_ID — последнее сообщение); при Counter=0
+// (тик после чтения) запрос не нужен.
+func TestReadDialogOnHistory(t *testing.T) {
+	var mu sync.Mutex
+	var readParams map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/im.dialog.read.json") {
+			mu.Lock()
+			readParams = nil
+			json.NewDecoder(r.Body).Decode(&readParams)
+			mu.Unlock()
+		}
+		fmt.Fprint(w, `{"result":true}`)
+	}))
+	defer srv.Close()
+
+	msgs := []Message{
+		{ID: 9, Name: "Анна", Text: "привет", Time: "10:00", DayKey: "d", DayLabel: "сегодня"},
+		{ID: 12, Name: "Анна", Text: "ещё вопрос", Time: "10:01", DayKey: "d", DayLabel: "сегодня"},
+	}
+	chats := []Chat{{DialogID: "chat7", Title: "Анна", Counter: 2}}
+	active := chats[0] // копия: гасить надо и m.active, и элемент m.chats
+	m := viewModel(120, 36, chats, nil, nil, &active, msgs)
+	m.api = &API{C: b24.New(srv.URL), My: 75}
+	m.ctx = context.Background()
+
+	mm, cmd := m.Update(historyMsg{dialogID: "chat7", rows: msgs})
+	m2 := mm.(Model)
+	if m2.active.Counter != 0 || m2.chats[0].Counter != 0 {
+		t.Fatalf("счётчик: active=%d chats=%d", m2.active.Counter, m2.chats[0].Counter)
+	}
+	if cmd == nil {
+		t.Fatal("история не вернула команду чтения")
+	}
+	if rm, ok := cmd().(readMsg); !ok || rm.err != nil {
+		t.Fatalf("чтение не прошло: %v", rm)
+	}
+	mu.Lock()
+	if readParams["DIALOG_ID"] != "chat7" {
+		t.Errorf("DIALOG_ID: %v", readParams["DIALOG_ID"])
+	}
+	if id, _ := readParams["MESSAGE_ID"].(float64); int64(id) != 12 {
+		t.Errorf("MESSAGE_ID: %v", readParams["MESSAGE_ID"])
+	}
+	mu.Unlock()
+
+	fresh := []Chat{{DialogID: "chat7", Title: "Анна"}}
+	m3 := viewModel(120, 36, fresh, nil, nil, &fresh[0], msgs)
+	if _, cmd := m3.Update(historyMsg{dialogID: "chat7", rows: msgs}); cmd != nil {
+		t.Fatal("при Counter=0 чтение запрашивать нельзя")
+	}
+}
+
+// Enter на уведомлении: непрочитанное гаснет локально и уходит в im.notify.read,
+// переход к карточке и flash «нет перехода» работают как раньше.
+func TestReadNotifyOnEnter(t *testing.T) {
+	notify := []NotifyItem{
+		{ID: "1", Title: "непрочитанное", Time: "10:39", Unread: true},
+		{ID: "2", Title: "с задачей", Time: "10:39", TaskID: 5, Unread: true},
+	}
+	m := viewModel(120, 36, nil, nil, notify, nil, nil)
+	m.tab = tabNotify
+
+	// без TaskID: флаг погас, flash на месте, команда чтения есть
+	mm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m2 := mm.(Model)
+	if m2.notify[0].Unread {
+		t.Fatal("enter не сбросил Unread")
+	}
+	if m2.flash != "у уведомления нет перехода" {
+		t.Fatalf("flash: %q", m2.flash)
+	}
+	if cmd == nil {
+		t.Fatal("нет команды im.notify.read")
+	}
+	// с TaskID: карточка открылась, флаг погас, команда есть
+	m2.cursor = 1
+	mm, cmd = m2.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m3 := mm.(Model)
+	if m3.tab != tabTasks {
+		t.Fatalf("enter не открыл карточку: tab=%v", m3.tab)
+	}
+	if m3.notify[1].Unread {
+		t.Fatal("enter не сбросил Unread у уведомления с задачей")
+	}
+	if cmd == nil {
+		t.Fatal("нет команды (карточка + чтение)")
+	}
 }

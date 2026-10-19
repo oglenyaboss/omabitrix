@@ -10,8 +10,8 @@ import (
 
 // API — REST-слой TUI поверх b24.Client. Живьём проверенные методы:
 // im.recent.list (items, v2), im.dialog.messages.get (LAST_ID), im.message.add,
-// im.dialog.read (write-path не проверен — деградация молча),
-// im.notify.get/read.all, tasks.task.list/get/update.
+// im.dialog.read (отправка и открытие чата),
+// im.notify.get/read/read.all, tasks.task.list/get/update.
 type API struct {
 	C   *b24.Client
 	My  int64 // id себя, из config.webhook_user
@@ -81,11 +81,20 @@ func (a *API) Send(ctx context.Context, dialogID, text string) (int64, error) {
 		}
 		id = wrap.MessageID
 	}
-	_ = a.C.Call(ctx, "im.dialog.read", map[string]any{
-		"DIALOG_ID": dialogID, "MESSAGE_ID": int64(id),
-	}, nil)
+	_ = a.ReadDialog(ctx, dialogID, int64(id))
 	a.chatsAt = time.Time{} // сброс кэша списка: превью/счётчик обновятся
 	return int64(id), nil
+}
+
+// ReadDialog — прочитать диалог до lastID включительно (MESSAGE_ID обязателен).
+func (a *API) ReadDialog(ctx context.Context, dialogID string, lastID int64) error {
+	err := a.C.Call(ctx, "im.dialog.read", map[string]any{
+		"DIALOG_ID": dialogID, "MESSAGE_ID": lastID,
+	}, nil)
+	if err == nil {
+		a.chatsAt = time.Time{} // счётчик чата в списке погаснет
+	}
+	return err
 }
 
 // Notify — системные уведомления. TTL 20s.
@@ -109,6 +118,23 @@ func (a *API) ReadAllNotify(ctx context.Context) error {
 	}
 	for i := range a.allNotify {
 		a.allNotify[i].Unread = false
+	}
+	return nil
+}
+
+// ReadNotify — прочитать ровно одно уведомление (ONLY_CURRENT обязателен:
+// без него портал читает все с ID ≥ данного).
+func (a *API) ReadNotify(ctx context.Context, id string) error {
+	if err := a.C.Call(ctx, "im.notify.read", map[string]any{
+		"ID": id, "ACTION": "Y", "ONLY_CURRENT": "Y",
+	}, nil); err != nil {
+		return err
+	}
+	for i := range a.allNotify {
+		if a.allNotify[i].ID == id {
+			a.allNotify[i].Unread = false
+			break
+		}
 	}
 	return nil
 }

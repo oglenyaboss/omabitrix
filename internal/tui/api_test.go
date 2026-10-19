@@ -1,9 +1,17 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"omabitrix/internal/b24"
 )
 
 func TestBucketsRFC3339(t *testing.T) {
@@ -49,6 +57,69 @@ func TestSendParseMessageID(t *testing.T) {
 		if int64(id) != want {
 			t.Errorf("%s: id=%d want %d", raw, id, want)
 		}
+	}
+}
+
+// ReadDialog — im.dialog.read с обязательным MESSAGE_ID; кэш списка
+// сбрасывается только при успехе.
+func TestReadDialogAPI(t *testing.T) {
+	var mu sync.Mutex
+	var method string
+	var params map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		method = r.URL.Path
+		params = nil
+		json.NewDecoder(r.Body).Decode(&params)
+		mu.Unlock()
+		fmt.Fprint(w, `{"result":true}`)
+	}))
+	defer srv.Close()
+
+	a := &API{C: b24.New(srv.URL), My: 75}
+	a.chatsAt = time.Now()
+	if err := a.ReadDialog(context.Background(), "chat10839", 586429); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !strings.HasSuffix(method, "/im.dialog.read.json") {
+		t.Errorf("метод: %s", method)
+	}
+	if params["DIALOG_ID"] != "chat10839" {
+		t.Errorf("DIALOG_ID: %v", params["DIALOG_ID"])
+	}
+	if id, _ := params["MESSAGE_ID"].(float64); int64(id) != 586429 {
+		t.Errorf("MESSAGE_ID: %v", params["MESSAGE_ID"])
+	}
+	if !a.chatsAt.IsZero() {
+		t.Error("кэш списка не сброшен")
+	}
+}
+
+// ReadNotify — ровно одно уведомление: ACTION=Y, ONLY_CURRENT=Y (без него
+// портал читает все с ID ≥ данного); локальный флаг гаснет только у этого ID.
+func TestReadNotifyAPI(t *testing.T) {
+	var params map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/im.notify.read.json") {
+			t.Errorf("метод: %s", r.URL.Path)
+		}
+		json.NewDecoder(r.Body).Decode(&params)
+		fmt.Fprint(w, `{"result":true}`)
+	}))
+	defer srv.Close()
+
+	a := &API{C: b24.New(srv.URL), My: 75,
+		allNotify: []NotifyItem{{ID: "42", Unread: true}, {ID: "43", Unread: true}}}
+	if err := a.ReadNotify(context.Background(), "42"); err != nil {
+		t.Fatal(err)
+	}
+	if params["ID"] != "42" || params["ACTION"] != "Y" || params["ONLY_CURRENT"] != "Y" {
+		t.Errorf("params: %v", params)
+	}
+	if a.allNotify[0].Unread || !a.allNotify[1].Unread {
+		t.Errorf("флаги: %+v", a.allNotify)
 	}
 }
 
