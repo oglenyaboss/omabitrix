@@ -140,46 +140,76 @@ func (a *API) ReadNotify(ctx context.Context, id string) error {
 	return nil
 }
 
-// OpenTasks — открытые задачи (не 5/6/7), чаты задач апендятся списком.
+// OpenTasks — открытые задачи (не 5/6/7) всех моих ролей, чаты задач
+// апендятся списком. Один batch: «делаю» — RESPONSIBLE_ID, «помогаю» —
+// ACCOMPLICE, «наблюдаю» — AUDITOR (OR в одном запросе не документирован).
 // Без дата-фильтров: корзины просрочка/сегодня считает клиент по DEADLINE
 // в серверной TZ — naive-фильтры портала больше не участвуют вовсе.
 func (a *API) OpenTasks(ctx context.Context, force bool) ([]Task, error) {
 	if !force && time.Since(a.tasksAt) < 20*time.Second && a.allTasks != nil {
 		return a.allTasks, nil
 	}
-	var raw json.RawMessage
-	err := a.C.Call(ctx, "tasks.task.list", map[string]any{
-		"filter": map[string]any{
-			"RESPONSIBLE_ID": a.My,
-			"!STATUS":        []int{5, 6, 7},
-		},
-		"select": []string{"ID,TITLE,STATUS,DEADLINE,CREATED_BY,CHAT_ID"},
-		"order":  map[string]string{"DEADLINE": "asc"},
-	}, &raw)
+	sel := []string{"ID,TITLE,STATUS,DEADLINE,CREATED_BY,CHAT_ID,NEW_COMMENTS_COUNT"}
+	order := map[string]string{"DEADLINE": "asc"}
+	taskCmd := func(field string) b24.Cmd {
+		return b24.Cmd{Method: "tasks.task.list", Params: map[string]any{
+			"filter": map[string]any{field: a.My, "!STATUS": []int{5, 6, 7}},
+			"select": sel,
+			"order":  order,
+		}}
+	}
+	// ponytail: по 50 задач на роль (одна страница); больше — пагинация start
+	res, errs, err := a.C.Batch(ctx, map[string]b24.Cmd{
+		"do":    taskCmd("RESPONSIBLE_ID"),
+		"help":  taskCmd("ACCOMPLICE"),
+		"watch": taskCmd("AUDITOR"),
+	})
 	if err != nil {
 		return nil, err
 	}
-	var res struct {
-		Tasks []struct {
-			ID       FlexInt    `json:"id"`
-			Title    string     `json:"title"`
-			Status   FlexString `json:"status"`
-			Deadline string     `json:"deadline"`
-			ChatID   FlexInt    `json:"chatId"`
-		} `json:"tasks"`
-	}
-	if err := json.Unmarshal(raw, &res); err != nil {
-		return nil, err
+	// упала любая команда — список был бы неполным, отдаём ошибку как при Call
+	for _, role := range []string{"do", "help", "watch"} {
+		if e, ok := errs[role]; ok {
+			return nil, e
+		}
 	}
 	a.allTasks = a.allTasks[:0]
-	for _, t := range res.Tasks {
-		a.allTasks = append(a.allTasks, Task{
-			ID: int64(t.ID), Title: t.Title, Status: string(t.Status),
-			Deadline: t.Deadline, ChatID: int64(t.ChatID),
-		})
+	seen := map[int64]bool{}
+	for _, role := range []string{"do", "help", "watch"} {
+		if len(res[role]) == 0 {
+			continue
+		}
+		var page taskListPage
+		if err := json.Unmarshal(res[role], &page); err != nil {
+			return nil, err
+		}
+		for _, t := range page.Tasks {
+			id := int64(t.ID)
+			if seen[id] {
+				continue // дубль в нескольких ролях: приоритет do > help > watch
+			}
+			seen[id] = true
+			a.allTasks = append(a.allTasks, Task{
+				ID: id, Title: t.Title, Status: string(t.Status),
+				Deadline: t.Deadline, ChatID: int64(t.ChatID),
+				Role: role, NewComments: int(t.NewComments),
+			})
+		}
 	}
 	a.tasksAt = a.now()
 	return a.allTasks, nil
+}
+
+// taskListPage — страница tasks.task.list; результат команды batch той же формы.
+type taskListPage struct {
+	Tasks []struct {
+		ID          FlexInt    `json:"id"`
+		Title       string     `json:"title"`
+		Status      FlexString `json:"status"`
+		Deadline    string     `json:"deadline"`
+		ChatID      FlexInt    `json:"chatId"`
+		NewComments FlexInt    `json:"newCommentsCount"`
+	} `json:"tasks"`
 }
 
 // Task — полная карточка (tasks.task.get: description, creator).
@@ -232,12 +262,15 @@ func ParseDeadline(dl string, loc *time.Location) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// TaskBuckets — корзины задач по DEADLINE (серверная TZ): просрочка и сегодня.
+// TaskBuckets — корзины задач по DEADLINE (серверная TZ): просрочка и сегодня;
+// Help/Watch — роли «помогаю»/«наблюдаю» (без дедлайн-раскладки).
 type TaskBuckets struct {
 	Overdue []Task
 	Today   []Task
 	Later   []Task
 	NoDate  []Task
+	Help    []Task
+	Watch   []Task
 }
 
 // Buckets раскладывает задачи; loc — серверная зона портала.
@@ -245,6 +278,14 @@ func Buckets(tasks []Task, loc *time.Location, now time.Time) TaskBuckets {
 	var b TaskBuckets
 	today := now.In(loc).Format("2006-01-02")
 	for _, t := range tasks {
+		switch t.Role {
+		case "help":
+			b.Help = append(b.Help, t)
+			continue
+		case "watch":
+			b.Watch = append(b.Watch, t)
+			continue
+		}
 		d, ok := ParseDeadline(t.Deadline, loc)
 		if !ok {
 			b.NoDate = append(b.NoDate, t)

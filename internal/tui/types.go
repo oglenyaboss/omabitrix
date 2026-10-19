@@ -46,4 +46,6 @@ type Task struct {
 	CreatorName string
 	Status      string // 1..7
 	ChatID      int64
+	Role        string // «делаю»/«помогаю»/«наблюдаю»: do | help | watch
+	NewComments int    // бейдж новых комментариев (newCommentsCount)
 }

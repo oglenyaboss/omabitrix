@@ -831,7 +831,7 @@ func (m *Model) visibleCount() int {
 
 type taskRow struct {
 	task Task
-	kind string // overdue/today/later/nodate
+	kind string // overdue/today/later/nodate/help/watch
 }
 
 func (m *Model) flatTasks() []taskRow {
@@ -847,6 +847,12 @@ func (m *Model) flatTasks() []taskRow {
 	}
 	for _, t := range m.buckets.NoDate {
 		out = append(out, taskRow{t, "nodate"})
+	}
+	for _, t := range m.buckets.Help {
+		out = append(out, taskRow{t, "help"})
+	}
+	for _, t := range m.buckets.Watch {
+		out = append(out, taskRow{t, "watch"})
 	}
 	if m.tab == tabTasks && m.filter != "" {
 		// фильтр по титулу как в чатах; пустые корзины просто исчезают —
