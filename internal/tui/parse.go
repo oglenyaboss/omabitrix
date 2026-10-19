@@ -400,6 +400,10 @@ func StagesFrom(raw []byte) []Stage {
 	return out
 }
 
+// oneLine — название задачи в одну строку: табы и переводы строк из портала
+// ломают ширину карточек.
+func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+
 // TaskFrom — tasks.task.get → карточка.
 func TaskFrom(raw []byte) Task {
 	var res struct {
@@ -408,7 +412,7 @@ func TaskFrom(raw []byte) Task {
 	_ = json.Unmarshal(raw, &res)
 	t := Task{
 		ID:          int64(res.Task.ID),
-		Title:       res.Task.Title,
+		Title:       oneLine(res.Task.Title),
 		Status:      string(res.Task.Status),
 		Deadline:    res.Task.Deadline,
 		Description: StripBB(res.Task.Description),

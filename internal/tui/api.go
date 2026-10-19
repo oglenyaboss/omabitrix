@@ -253,7 +253,7 @@ func (a *API) OpenTasks(ctx context.Context, force bool) ([]Task, error) {
 			}
 			seen[id] = true
 			a.allTasks = append(a.allTasks, Task{
-				ID: id, Title: t.Title, Status: string(t.Status),
+				ID: id, Title: oneLine(t.Title), Status: string(t.Status),
 				Deadline: t.Deadline, ChatID: int64(t.ChatID),
 				Role: role, NewComments: int(t.NewComments),
 				GroupID: int64(t.GroupID), StageID: int64(t.StageID),

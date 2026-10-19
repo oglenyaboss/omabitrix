@@ -50,7 +50,8 @@ func (m Model) boardColumns() []boardCol {
 		byStage[t.Stage] = append(byStage[t.Stage], t)
 	}
 	loc := m.srvLoc()
-	today := m.api.now().In(loc).Format("2006-01-02")
+	now := m.api.now()
+	today := now.In(loc).Format("2006-01-02")
 	kindOf := func(t Task) string {
 		d, ok := ParseDeadline(t.Deadline, loc)
 		if !ok {
@@ -58,7 +59,7 @@ func (m Model) boardColumns() []boardCol {
 		}
 		day := d.In(loc).Format("2006-01-02")
 		switch {
-		case day < today:
+		case d.Before(now): // сегодняшний срок, прошедший по времени, — тоже просрочка
 			return "overdue"
 		case day == today:
 			return "today"
@@ -430,7 +431,11 @@ func (m Model) boardCard(r taskRow, sel bool, innerW int) []string {
 		now := m.api.now().In(m.srvLoc())
 		switch {
 		case r.kind == "overdue":
-			due = pill("просрочено "+dueLabel(d, now), cInk, cUrgent)
+			label := dueLabel(d, now)
+			if dayDiff(d, now) == 0 {
+				label = d.Format("15:04") // «просрочено сегодня 18:00» не влезает в карточку
+			}
+			due = pill("просрочено "+label, cInk, cUrgent)
 		case r.kind == "today":
 			due = pill(dueLabel(d, now), cInk, pulseColor(m.frame))
 		case dayDiff(d, now) < 7:

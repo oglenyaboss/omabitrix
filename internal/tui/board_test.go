@@ -326,3 +326,21 @@ func TestBoardHiddenColumns(t *testing.T) {
 		t.Fatalf("окно не следует за курсором:\n%s", v)
 	}
 }
+
+// Сегодняшний срок, прошедший по времени, — просрочка (не «сегодня»),
+// и плашка помещается в карточку.
+func TestBoardOverdueToday(t *testing.T) {
+	tasks := []Task{{ID: 1, Title: "Обновить фид", Role: "do", GroupID: 1,
+		StageID: 10, Stage: "INBOX", Deadline: "2026-10-19 10:00:00"}}
+	m := boardModel(tasks) // сейчас 12:00
+	s := ansi.Strip(m.View().Content)
+	if !strings.Contains(s, "просрочено 10:00") || strings.Contains(s, "сегодня 10:00") {
+		t.Fatalf("прошедший сегодняшний срок не просрочен:\n%s", s)
+	}
+}
+
+func TestOneLineTitle(t *testing.T) {
+	if got := oneLine("SRV. Сделать два\tфида\n "); got != "SRV. Сделать два фида" {
+		t.Fatalf("%q", got)
+	}
+}
