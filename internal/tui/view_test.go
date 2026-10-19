@@ -41,7 +41,12 @@ func TestViewFitsScreen(t *testing.T) {
 	}
 	tasks := make([]Task, 20)
 	for i := range tasks {
-		tasks[i] = Task{ID: int64(i + 1), Title: "Задача с достаточно длинным названием", Deadline: "2026-10-19 14:00:00"}
+		stages := []struct {
+			stage string
+			sort  int
+		}{{"INBOX", 0}, {"TODO", 1}, {"DOING", 2}, {"", 9}}
+		tasks[i] = Task{ID: int64(i + 1), Title: "Задача с достаточно длинным названием", Deadline: "2026-10-19 14:00:00",
+			Role: "do", Stage: stages[i%4].stage, StageSort: stages[i%4].sort}
 	}
 	notify := make([]NotifyItem, 20)
 	for i := range notify {
@@ -163,7 +168,7 @@ func keyPress(m Model, key string) (Model, tea.Cmd) {
 }
 
 func TestStatusOverlayKeys(t *testing.T) {
-	m := viewModel(120, 36, nil, []Task{{ID: 1, Title: "x", Status: "2"}}, nil, nil, nil)
+	m := viewModel(120, 36, nil, []Task{{ID: 1, Title: "x", Status: "2", Role: "do"}}, nil, nil, nil)
 	m.tab = tabTasks
 	m.taskOpen = true
 	m.taskCard = Task{ID: 1, Status: "2"}
@@ -189,7 +194,7 @@ func TestStatusOverlayKeys(t *testing.T) {
 }
 
 func TestDeadlineOverlayAndTaskChat(t *testing.T) {
-	m := viewModel(120, 36, nil, []Task{{ID: 1, Title: "x", Status: "2", ChatID: 7}}, nil, nil, nil)
+	m := viewModel(120, 36, nil, []Task{{ID: 1, Title: "x", Status: "2", ChatID: 7, Role: "do"}}, nil, nil, nil)
 	m.tab = tabTasks
 	m.taskOpen = true
 	m.taskCard = Task{ID: 1, Status: "2", ChatID: 7, Deadline: "2026-10-21T10:30:00+05:00"}
@@ -345,7 +350,7 @@ func TestHistoryGrouping(t *testing.T) {
 func TestMouseClickCardGateAndTabClamp(t *testing.T) {
 	tasks := make([]Task, 3)
 	for i := range tasks {
-		tasks[i] = Task{ID: int64(i + 1), Title: fmt.Sprintf("задача %d", i+1)}
+		tasks[i] = Task{ID: int64(i + 1), Title: fmt.Sprintf("задача %d", i+1), Role: "do"}
 	}
 	notify := make([]NotifyItem, 12)
 	for i := range notify {
@@ -353,19 +358,15 @@ func TestMouseClickCardGateAndTabClamp(t *testing.T) {
 	}
 	m := viewModel(120, 36, nil, tasks, notify, nil, nil)
 	m.tab = tabTasks
-	m.taskOpen = true
-	m.taskCard = tasks[0]
 
-	// клик по правой панели (карточке) — не выбирает задачу
+	// клики на доске задач не обрабатываются: мышь юзеру не нужна
 	mm, _ := m.Update(tea.MouseClickMsg{X: m.listW + 10, Y: 3, Button: tea.MouseLeft})
-	if got := mm.(Model).cursor; got != 0 {
-		t.Fatalf("клик по карточке сдвинул курсор на %d", got)
+	if got := mm.(Model).cursor; got != 0 || mm.(Model).cardReq != 0 {
+		t.Fatalf("клик по доске сдвинул курсор на %d", got)
 	}
-	// клик по списку слева — выбирает (строка 5 = первая строка задачи 1:
-	// 0 — вкладки, 1 — грань, 2 — секция, 3-4 — задача 0, 5-6 — задача 1)
 	mm, _ = mm.(Model).Update(tea.MouseClickMsg{X: 5, Y: 5, Button: tea.MouseLeft})
-	if got := mm.(Model).cursor; got != 1 {
-		t.Fatalf("клик по списку: cursor=%d, хочу 1", got)
+	if got := mm.(Model).cursor; got != 0 || mm.(Model).cardReq != 0 {
+		t.Fatalf("клик по колонке: cursor=%d cardReq=%d", got, mm.(Model).cardReq)
 	}
 	// курсор 11 на уведах → вкладка чатов (0 чатов... берём 1 чат) — кламп
 	m2 := mm.(Model)
@@ -511,7 +512,7 @@ func TestTabCycleKeys(t *testing.T) {
 }
 
 func TestBackFromCard(t *testing.T) {
-	m := viewModel(120, 36, nil, []Task{{ID: 1, Title: "x"}}, nil, nil, nil)
+	m := viewModel(120, 36, nil, []Task{{ID: 1, Title: "x", Role: "do"}}, nil, nil, nil)
 	m.tab = tabTasks
 	m.taskOpen = true
 	m.taskCard = Task{ID: 1, Title: "x"}
@@ -531,7 +532,7 @@ func TestBackFromCard(t *testing.T) {
 }
 
 func TestFooterTaskCardHints(t *testing.T) {
-	m := viewModel(120, 36, nil, []Task{{ID: 1, Title: "x"}}, nil, nil, nil)
+	m := viewModel(120, 36, nil, []Task{{ID: 1, Title: "x", Role: "do"}}, nil, nil, nil)
 	m.tab = tabTasks
 	m.taskOpen = true
 	m.taskCard = Task{ID: 1, Title: "x", ChatID: 7}
@@ -544,7 +545,7 @@ func TestFooterTaskCardHints(t *testing.T) {
 }
 
 func TestFilterAnyTab(t *testing.T) {
-	m := viewModel(120, 36, nil, []Task{{ID: 1, Title: "x"}}, nil, nil, nil)
+	m := viewModel(120, 36, nil, []Task{{ID: 1, Title: "x", Role: "do"}}, nil, nil, nil)
 	m.tab = tabTasks
 	m2, _ := keyPress(m, "/")
 	if m2.focus != focusFilter {
@@ -552,24 +553,21 @@ func TestFilterAnyTab(t *testing.T) {
 	}
 }
 
-// Бейдж новых комментариев: число справа в строке задачи, строка в ширину.
+// Бейдж новых комментариев: «✎ N» в строке срока карточки.
 func TestTaskBadgeInView(t *testing.T) {
-	tasks := []Task{{ID: 1, Title: "задача с бейджем", NewComments: 4}}
+	tasks := []Task{{ID: 1, Title: "задача с бейджем", NewComments: 4, Role: "do", Stage: "INBOX", StageSort: 0, Project: "ПРО"}}
 	m := viewModel(120, 36, nil, tasks, nil, nil, nil)
 	m.tab = tabTasks
 	v := m.View().Content
 	var badgeLine string
 	for _, l := range strings.Split(v, "\n") {
-		if strings.Contains(ansi.Strip(l), "задача с бейджем") {
+		if strings.Contains(ansi.Strip(l), "✎ 4") {
 			badgeLine = l
 			break
 		}
 	}
 	if badgeLine == "" {
-		t.Fatal("строки задачи нет в кадре")
-	}
-	if !strings.Contains(ansi.Strip(badgeLine), "4") {
-		t.Fatalf("бейджа «4» нет в строке задачи: %q", badgeLine)
+		t.Fatal("бейджа «✎ 4» нет в кадре")
 	}
 	for i, line := range strings.Split(v, "\n") {
 		if lw := lipgloss.Width(line); lw > 120 {
@@ -580,8 +578,8 @@ func TestTaskBadgeInView(t *testing.T) {
 
 func TestFlatTasksFilter(t *testing.T) {
 	tasks := []Task{
-		{ID: 1, Title: "Обновить фид", Deadline: "2026-10-18 10:00:00"},
-		{ID: 2, Title: "Отчёт Roistat", Deadline: "2026-10-19 15:00:00"},
+		{ID: 1, Title: "Обновить фид", Deadline: "2026-10-18 10:00:00", Role: "do"},
+		{ID: 2, Title: "Отчёт Roistat", Deadline: "2026-10-19 15:00:00", Role: "do"},
 	}
 	m := viewModel(120, 36, nil, tasks, nil, nil, nil)
 	m.tab = tabTasks
@@ -619,8 +617,8 @@ func TestVisibleNotifyFilter(t *testing.T) {
 
 func TestFilterRowInView(t *testing.T) {
 	tasks := []Task{
-		{ID: 1, Title: "Обновить фид", Deadline: "2026-10-18 10:00:00"},
-		{ID: 2, Title: "Отчёт Roistat", Deadline: "2026-10-19 15:00:00"},
+		{ID: 1, Title: "Обновить фид", Deadline: "2026-10-18 10:00:00", Role: "do"},
+		{ID: 2, Title: "Отчёт Roistat", Deadline: "2026-10-19 15:00:00", Role: "do"},
 	}
 	m := viewModel(120, 36, nil, tasks, nil, nil, nil)
 	m.tab = tabTasks
@@ -662,7 +660,7 @@ func TestNotifyFilterEnterClearsUnread(t *testing.T) {
 }
 
 func TestBrowserKey(t *testing.T) {
-	tasks := []Task{{ID: 1, Title: "a"}, {ID: 2, Title: "b"}}
+	tasks := []Task{{ID: 1, Title: "a", Role: "do"}, {ID: 2, Title: "b", Role: "do"}}
 	m := viewModel(120, 36, nil, tasks, nil, nil, nil)
 	m.tab = tabTasks
 	m2, cmd := keyPress(m, "o")
@@ -676,7 +674,7 @@ func TestBrowserKey(t *testing.T) {
 }
 
 func TestFollowOnNav(t *testing.T) {
-	tasks := []Task{{ID: 1, Title: "a"}, {ID: 2, Title: "b"}}
+	tasks := []Task{{ID: 1, Title: "a", Role: "do"}, {ID: 2, Title: "b", Role: "do"}}
 	m := viewModel(120, 36, nil, tasks, nil, nil, nil)
 	m.tab = tabTasks
 	m.taskOpen = true
@@ -707,7 +705,7 @@ func TestBrowserURLFilteredNotify(t *testing.T) {
 }
 
 func TestReplyFromTaskCard(t *testing.T) {
-	m := viewModel(120, 36, nil, []Task{{ID: 1, Title: "x", Status: "2", ChatID: 7}}, nil, nil, nil)
+	m := viewModel(120, 36, nil, []Task{{ID: 1, Title: "x", Status: "2", ChatID: 7, Role: "do"}}, nil, nil, nil)
 	m.tab = tabTasks
 	m.taskOpen = true
 	m.taskCard = Task{ID: 1, Title: "x", Status: "2", ChatID: 7}

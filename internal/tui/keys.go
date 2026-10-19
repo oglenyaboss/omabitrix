@@ -227,6 +227,52 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// канбан-доска задач: колонки, перенос стадии, роль/проект; до глобальных —
+	// чтобы свои h/l/H/L/t/p не столкнулись с чатами (H — «раньше», l — лайк)
+	if m.tab == tabTasks && m.focus == focusList && m.overlay == ovNone {
+		switch {
+		case key.Matches(msg, km.ColLeft):
+			m.moveCol(-1)
+			return m, m.followCard()
+		case key.Matches(msg, km.ColRight):
+			m.moveCol(1)
+			return m, m.followCard()
+		case key.Matches(msg, km.Down):
+			// j/k не выходят за пределы текущей колонки
+			rows := m.flatTasks()
+			if m.cursor >= 0 && m.cursor < len(rows)-1 &&
+				rows[m.cursor+1].col == rows[m.cursor].col {
+				m.cursor++
+			}
+			return m, m.followCard()
+		case key.Matches(msg, km.Up):
+			rows := m.flatTasks()
+			if m.cursor > 0 && rows[m.cursor-1].col == rows[m.cursor].col {
+				m.cursor--
+			}
+			return m, m.followCard()
+		case key.Matches(msg, km.MoveLeft):
+			return m.moveStage(-1)
+		case key.Matches(msg, km.MoveRight):
+			return m.moveStage(1)
+		case key.Matches(msg, km.Role):
+			switch m.boardRole() {
+			case "do":
+				m.taskRole = "help"
+			case "help":
+				m.taskRole = "watch"
+			default:
+				m.taskRole = "do"
+			}
+			m.cursor, m.taskIdx = 0, 0
+			return m, nil
+		case key.Matches(msg, km.Project):
+			m.taskProject = m.nextProject()
+			m.cursor, m.taskIdx = 0, 0
+			return m, nil
+		}
+	}
+
 	// глобальные
 	switch {
 	case key.Matches(msg, km.Quit), key.Matches(msg, km.Back):

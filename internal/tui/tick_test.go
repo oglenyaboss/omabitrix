@@ -198,9 +198,9 @@ func TestReloadKeepsChatCursor(t *testing.T) {
 
 func TestReloadKeepsTaskCursor(t *testing.T) {
 	tasks := []Task{
-		{ID: 1, Title: "один"},
-		{ID: 2, Title: "два"},
-		{ID: 3, Title: "три"},
+		{ID: 1, Title: "один", Role: "do"},
+		{ID: 2, Title: "два", Role: "do"},
+		{ID: 3, Title: "три", Role: "do"},
 	}
 	m := viewModel(120, 36, nil, tasks, nil, nil, nil)
 	m.tab = tabTasks
@@ -210,8 +210,12 @@ func TestReloadKeepsTaskCursor(t *testing.T) {
 	m.api.allTasks = []Task{tasks[1], tasks[0], tasks[2]}
 	mm, _ := m.Update(reloadMsg{tasks: true})
 	got := mm.(Model)
-	if got.cursor != 0 || got.taskIdx != 0 {
-		t.Fatalf("после перечитки cursor=%d taskIdx=%d, хочу 0 и 0 (задача 2)", got.cursor, got.taskIdx)
+	// на доске колонка сортируется по ID (1,2,3) — задача 2 по индексом 1
+	if got.cursor != 1 || got.taskIdx != 1 {
+		t.Fatalf("после перечитки cursor=%d taskIdx=%d, хочу 1 и 1 (задача 2)", got.cursor, got.taskIdx)
+	}
+	if rows := got.flatTasks(); got.cursor < len(rows) && rows[got.cursor].task.ID != 2 {
+		t.Fatalf("под курсором задача %d, хочу 2", rows[got.cursor].task.ID)
 	}
 	if !got.cardMatchesCursor() {
 		t.Fatal("карточка перестала совпадать с курсором")
@@ -278,8 +282,8 @@ func TestHistoryMsgMergesOld(t *testing.T) {
 // только последний — иначе быстрое листание копило бы запросы к порталу.
 func TestFollowCardSchedulesTick(t *testing.T) {
 	tasks := []Task{
-		{ID: 1, Title: "один"},
-		{ID: 2, Title: "два"},
+		{ID: 1, Title: "один", Role: "do"},
+		{ID: 2, Title: "два", Role: "do"},
 	}
 	m := viewModel(120, 36, nil, tasks, nil, nil, nil)
 	m.tab = tabTasks
@@ -307,8 +311,8 @@ func TestFollowCardSchedulesTick(t *testing.T) {
 
 func TestFollowCardStaleSeqDropped(t *testing.T) {
 	tasks := []Task{
-		{ID: 1, Title: "один"},
-		{ID: 2, Title: "два"},
+		{ID: 1, Title: "один", Role: "do"},
+		{ID: 2, Title: "два", Role: "do"},
 	}
 	m := viewModel(120, 36, nil, tasks, nil, nil, nil)
 	m.tab = tabTasks
@@ -332,8 +336,8 @@ func TestFollowCardStaleSeqDropped(t *testing.T) {
 
 func TestFollowCardAppliesLatest(t *testing.T) {
 	tasks := []Task{
-		{ID: 1, Title: "один"},
-		{ID: 2, Title: "два"},
+		{ID: 1, Title: "один", Role: "do"},
+		{ID: 2, Title: "два", Role: "do"},
 	}
 	m := viewModel(120, 36, nil, tasks, nil, nil, nil)
 	m.tab = tabTasks
@@ -359,8 +363,8 @@ func TestFollowCardAppliesLatest(t *testing.T) {
 
 func TestFollowCardRequiresOpenCard(t *testing.T) {
 	tasks := []Task{
-		{ID: 1, Title: "один"},
-		{ID: 2, Title: "два"},
+		{ID: 1, Title: "один", Role: "do"},
+		{ID: 2, Title: "два", Role: "do"},
 	}
 	m := viewModel(120, 36, nil, tasks, nil, nil, nil)
 	m.tab = tabTasks
