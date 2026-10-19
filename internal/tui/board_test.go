@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -290,7 +292,7 @@ func TestBoardViewHeight(t *testing.T) {
 	colW := (m.width - (n - 1)) / n
 	colH := m.bodyH - 2
 	for _, c := range m.boardColumns() {
-		if h := lipgloss.Height(m.boardColView(c, -1, colW, colH)); h != colH {
+		if h := lipgloss.Height(m.boardColView(c, -1, -1, false, colW, colH)); h != colH {
 			t.Fatalf("колонка %q: высота %d, хочу %d", c.title, h, colH)
 		}
 	}
@@ -342,5 +344,87 @@ func TestBoardOverdueToday(t *testing.T) {
 func TestOneLineTitle(t *testing.T) {
 	if got := oneLine("SRV. Сделать два\tфида\n "); got != "SRV. Сделать два фида" {
 		t.Fatalf("%q", got)
+	}
+}
+
+// Мышь на доске: клик по карточке ставит курсор, повторный открывает.
+func TestBoardMouseClickSelect(t *testing.T) {
+	tasks := []Task{
+		{ID: 1, Title: "первая", Role: "do", GroupID: 1, StageID: 10, Stage: "INBOX", StageSort: 0},
+		{ID: 2, Title: "вторая", Role: "do", GroupID: 1, StageID: 10, Stage: "INBOX", StageSort: 0},
+		{ID: 3, Title: "третья", Role: "do", GroupID: 1, StageID: 20, Stage: "TODO", StageSort: 1},
+	}
+	m := boardModel(tasks)
+	click := func(mm Model, x, y int) Model {
+		n, _ := mm.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+		n2, _ := n.(Model).Update(tea.MouseReleaseMsg{X: x, Y: y, Button: tea.MouseLeft})
+		return n2.(Model)
+	}
+	// вторая карточка INBOX: Y 10..14 (первая 5..9)
+	m1 := click(m, 10, 11)
+	if m1.cursor != 1 || m1.cardReq != 0 {
+		t.Fatalf("клик по второй карточке: cursor=%d cardReq=%d", m1.cursor, m1.cardReq)
+	}
+	// повторный клик — открыть
+	m2 := click(m1, 10, 11)
+	if m2.cardReq != 2 {
+		t.Fatalf("повторный клик не открыл карточку: cardReq=%d", m2.cardReq)
+	}
+	// клик по шапке колонки — ничего
+	m3 := click(m2, 10, 3)
+	if m3.cursor != 1 || m3.cardReq != 2 {
+		t.Fatalf("клик по шапке изменил состояние: cursor=%d cardReq=%d", m3.cursor, m3.cardReq)
+	}
+}
+
+// Перетаскивание: press → motion → release в другую колонку = перенос стадии;
+// отпускание в той же колонке стадию не меняет.
+func TestBoardMouseDrag(t *testing.T) {
+	tasks := []Task{
+		{ID: 1, Title: "первая", Role: "do", GroupID: 1, StageID: 10, Stage: "INBOX", StageSort: 0},
+		{ID: 2, Title: "вторая", Role: "do", GroupID: 1, StageID: 10, Stage: "INBOX", StageSort: 0},
+		{ID: 3, Title: "третья", Role: "do", GroupID: 1, StageID: 20, Stage: "TODO", StageSort: 1},
+	}
+	m := boardModel(tasks)
+	// press по первой карточке INBOX, движение в TODO (вторая колонка, X ≥ 60), release
+	mm, _ := m.Update(tea.MouseClickMsg{X: 10, Y: 5, Button: tea.MouseLeft})
+	m1 := mm.(Model)
+	if m1.drag == nil || m1.drag.taskID != 1 || m1.drag.fromCol != 0 {
+		t.Fatalf("press не начал перетаскивание: %+v", m1.drag)
+	}
+	mm, _ = m1.Update(tea.MouseMotionMsg{X: 70, Y: 6})
+	m2 := mm.(Model)
+	if m2.drag == nil || m2.drag.toCol != 1 {
+		t.Fatalf("motion не запомнил колонку-цель: %+v", m2.drag)
+	}
+	mm, cmd := m2.Update(tea.MouseReleaseMsg{X: 70, Y: 6, Button: tea.MouseLeft})
+	m3 := mm.(Model)
+	if cmd == nil {
+		t.Fatal("release не дал команду переноса")
+	}
+	if got := m3.tasks[0]; got.StageID != 20 || got.Stage != "TODO" || m3.drag != nil {
+		t.Fatalf("release не перенёс: stage=%+v drag=%v", got, m3.drag)
+	}
+	if m3.flash != "→ TODO" {
+		t.Fatalf("flash: %q", m3.flash)
+	}
+
+	// отпускание в той же колонке — обычный клик: стадия на месте
+	// (свежая модель: первый перенос уже записан в общий слайс tasks)
+	fresh := []Task{
+		{ID: 1, Title: "первая", Role: "do", GroupID: 1, StageID: 10, Stage: "INBOX", StageSort: 0},
+		{ID: 2, Title: "вторая", Role: "do", GroupID: 1, StageID: 10, Stage: "INBOX", StageSort: 0},
+		{ID: 3, Title: "третья", Role: "do", GroupID: 1, StageID: 20, Stage: "TODO", StageSort: 1},
+	}
+	m4 := boardModel(fresh)
+	mm, _ = m4.Update(tea.MouseClickMsg{X: 10, Y: 5, Button: tea.MouseLeft})
+	m5 := mm.(Model)
+	mm, _ = m5.Update(tea.MouseReleaseMsg{X: 12, Y: 7, Button: tea.MouseLeft})
+	m6 := mm.(Model)
+	if m6.tasks[0].StageID != 10 || m6.drag != nil {
+		t.Fatalf("release в той же колонке: stage=%d drag=%v", m6.tasks[0].StageID, m6.drag)
+	}
+	if m6.cardReq != 1 {
+		t.Fatalf("повторный клик по выбранной не открыл карточку: %d", m6.cardReq)
 	}
 }

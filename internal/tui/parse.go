@@ -367,6 +367,8 @@ type rawTask struct {
 	Deadline    string     `json:"deadline"`
 	Description string     `json:"description"`
 	ChatID      FlexInt    `json:"chatId"`
+	GroupID     FlexInt    `json:"groupId"`
+	StageID     FlexInt    `json:"stageId"`
 	Creator     *struct {
 		Name string `json:"name"`
 	} `json:"creator"`
@@ -417,6 +419,8 @@ func TaskFrom(raw []byte) Task {
 		Deadline:    res.Task.Deadline,
 		Description: StripBB(res.Task.Description),
 		ChatID:      int64(res.Task.ChatID),
+		GroupID:     int64(res.Task.GroupID),
+		StageID:     int64(res.Task.StageID),
 	}
 	if res.Task.Creator != nil {
 		t.CreatorName = res.Task.Creator.Name

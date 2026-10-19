@@ -359,14 +359,10 @@ func TestMouseClickCardGateAndTabClamp(t *testing.T) {
 	m := viewModel(120, 36, nil, tasks, notify, nil, nil)
 	m.tab = tabTasks
 
-	// клики на доске задач не обрабатываются: мышь юзеру не нужна
+	// клик мимо карточек (шапка колонки) не двигает курсор и не открывает
 	mm, _ := m.Update(tea.MouseClickMsg{X: m.listW + 10, Y: 3, Button: tea.MouseLeft})
 	if got := mm.(Model).cursor; got != 0 || mm.(Model).cardReq != 0 {
-		t.Fatalf("клик по доске сдвинул курсор на %d", got)
-	}
-	mm, _ = mm.(Model).Update(tea.MouseClickMsg{X: 5, Y: 5, Button: tea.MouseLeft})
-	if got := mm.(Model).cursor; got != 0 || mm.(Model).cardReq != 0 {
-		t.Fatalf("клик по колонке: cursor=%d cardReq=%d", got, mm.(Model).cardReq)
+		t.Fatalf("клик мимо карточек: cursor=%d cardReq=%d", got, mm.(Model).cardReq)
 	}
 	// курсор 11 на уведах → вкладка чатов (0 чатов... берём 1 чат) — кламп
 	m2 := mm.(Model)
@@ -536,8 +532,9 @@ func TestFooterTaskCardHints(t *testing.T) {
 	m.tab = tabTasks
 	m.taskOpen = true
 	m.taskCard = Task{ID: 1, Title: "x", ChatID: 7}
-	f := m.footer()
-	for _, want := range []string{"статус", "срок"} {
+	f := ansi.Strip(m.footer())
+	for _, want := range []string{"H/L стадия", "s стадии", "d срок", "r написать",
+		"c чат во весь экран", "o в браузере", "q назад"} {
 		if !strings.Contains(f, want) {
 			t.Fatalf("футер карточки без %q:\n%s", want, f)
 		}
@@ -679,16 +676,16 @@ func TestFollowOnNav(t *testing.T) {
 	m.tab = tabTasks
 	m.taskOpen = true
 	m.taskCard = m.flatTasks()[0].task
-	// уход с открытой задачи — тик карточки; возврат на неё — запрос не нужен
+	// уход с открытой задачи колесом — тик карточки; возврат — тоже
 	for _, step := range []struct {
-		k      string
+		btn    tea.MouseButton
 		follow bool
-	}{{"j", true}, {"k", false}, {"G", true}, {"g", false}} {
+	}{{tea.MouseWheelDown, true}, {tea.MouseWheelUp, false}} {
 		before := m.followSeq
-		var cmd tea.Cmd
-		m, cmd = keyPress(m, step.k)
+		mm, cmd := m.Update(tea.MouseWheelMsg{X: 5, Y: 10, Button: step.btn})
+		m = mm.(Model)
 		if got := cmd != nil && m.followSeq == before+1; got != step.follow {
-			t.Fatalf("%s: follow=%v, ждали %v", step.k, got, step.follow)
+			t.Fatalf("колесо: follow=%v, ждали %v", got, step.follow)
 		}
 	}
 }
@@ -705,18 +702,29 @@ func TestBrowserURLFilteredNotify(t *testing.T) {
 }
 
 func TestReplyFromTaskCard(t *testing.T) {
-	m := viewModel(120, 36, nil, []Task{{ID: 1, Title: "x", Status: "2", ChatID: 7, Role: "do"}}, nil, nil, nil)
+	tasks := []Task{{ID: 1, Title: "x", Status: "2", ChatID: 7, Role: "do"}}
+	m := viewModel(120, 36, nil, tasks, nil, nil, nil)
 	m.tab = tabTasks
-	m.taskOpen = true
-	m.taskCard = Task{ID: 1, Title: "x", Status: "2", ChatID: 7}
-	m2, _ := keyPress(m, "r")
-	if m2.active == nil || m2.active.DialogID != "chat7" || m2.focus != focusReply {
-		t.Fatalf("r на карточке: чат задачи с полем ответа, got active=%+v focus=%v", m2.active, m2.focus)
+	m.cursor, m.taskIdx = 0, 0
+	m.cardReq = 1
+	// двухпанельный экран: чат открывается сразу при загрузке карточки
+	mm, cmd := m.Update(taskCardMsg{requested: 1, task: Task{ID: 1, Title: "x", Status: "2", ChatID: 7}})
+	m2 := mm.(Model)
+	if m2.active == nil || m2.active.DialogID != "chat7" || cmd == nil {
+		t.Fatalf("карточка не открыла чат: active=%+v cmd=%v", m2.active, cmd)
 	}
-	m.taskCard.ChatID = 0
-	m3, _ := keyPress(m, "r")
-	if m3.active != nil || m3.focus != focusList || m3.flash == "" {
-		t.Fatalf("r без чата задачи: флеш, без перехода; got active=%+v flash=%q", m3.active, m3.flash)
+	m3, _ := keyPress(m2, "r")
+	if m3.focus != focusReply {
+		t.Fatalf("r на карточке: focus=%v, хочу поле ответа", m3.focus)
+	}
+	// задача без чата: r — флеш, фокус на месте
+	m4 := m
+	m4.cardReq = 2
+	mm5, _ := m4.Update(taskCardMsg{requested: 2, task: Task{ID: 1, Title: "x", Status: "2"}})
+	m5 := mm5.(Model)
+	m6, _ := keyPress(m5, "r")
+	if m6.focus != focusList || m6.active != nil || m6.flash != "у задачи нет чата" {
+		t.Fatalf("r без чата: focus=%v active=%v flash=%q", m6.focus, m6.active, m6.flash)
 	}
 }
 

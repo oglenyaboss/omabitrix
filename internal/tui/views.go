@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/reflow/wordwrap"
 )
 
 func (m Model) View() tea.View {
@@ -396,85 +397,89 @@ func searchHighlight(text, q string) string {
 	return string(r[:ri]) + stAccent.Render(string(r[ri:ri+rq])) + string(r[ri+rq:])
 }
 
-// ---- задачи: канбан-доска (или карточка на всю ширину)
+// ---- задачи: канбан-доска или экран задачи (карточка + чат)
 
 func (m Model) viewTasks() string {
 	if !m.taskOpen {
 		return m.viewBoard()
 	}
+	if m.twoPane() {
+		return lipgloss.JoinHorizontal(lipgloss.Top, m.taskCardPane(), " ", m.taskChatPane())
+	}
 	return m.taskCardPane()
 }
 
-func deadlineShort(dl string) string {
-	if len(dl) >= 10 {
-		d := dl[8:10] + "." + dl[5:7]
-		if len(dl) >= 16 {
-			d += " " + dl[11:16]
-		}
-		return d
-	}
-	return dl
-}
+// ---- карточка задачи (левая панель экрана задачи)
 
-// ---- карточка задачи (правая панель вкладки задач)
+// cardDescMax — сколько строк описания влезает в карточку при текущем меню.
+// Общая точка для рендера и пейджинга.
+func (m Model) cardDescMax() int {
+	cardInner := max(m.bodyH-2, 4)
+	menuH := 0
+	switch m.overlay {
+	case ovStatus:
+		menuH = m.menuLen() + 3
+	case ovDeadline:
+		menuH = len(deadlineOptions(m.api.now(), m.taskCard.Deadline)) + 3
+	}
+	chatRows := 0
+	if !m.twoPane() && m.taskCard.ChatID > 0 {
+		chatRows = 2
+	}
+	d := cardInner - 6 - chatRows - menuH - 1 // шапка 6 + пустая после описания
+	if d < 3 {
+		d = 3
+	}
+	return d
+}
 
 func (m Model) taskCardPane() string {
 	t := m.taskCard
 	inner := m.cardW
-	cardInner := m.bodyH - 2
-	if cardInner < 4 {
-		cardInner = 4
-	}
+	cardInner := max(m.bodyH-2, 4)
 	if m.cardLoading {
 		// карточка ещё грузится: тело — заглушка, id берём из запроса,
 		// а не от старой карточки
 		title := paneTitle("", "задача · #"+fmt.Sprint(m.cardReq), "", m.tab == tabTasks)
 		return box(title, []string{stDim.Render("загрузка…")}, inner, m.tab == tabTasks)
 	}
-	menuH := 0
-	switch m.overlay {
-	case ovStatus:
-		menuH = len(statusOptions(t.Status)) + 3
-	case ovDeadline:
-		menuH = len(deadlineOptions(m.api.now(), t.Deadline)) + 3
+	descMax := m.cardDescMax()
+	var lines []string
+	// титул: перенос по словам до 2 строк
+	wrap := strings.Split(wordwrap.String(t.Title, max(inner-2, 1)), "\n")
+	lines = append(lines, stTitle.Render(truncate(wrap[0], inner-2)))
+	if len(wrap) > 1 {
+		lines = append(lines, stTitle.Render(truncate(strings.Join(wrap[1:], " "), inner-2)))
 	}
-	chatRows := 0
-	if t.ChatID > 0 {
-		chatRows = 2
-	}
-	descMax := cardInner - 5 - chatRows - menuH // шапка(4) + пустая после desc
-	if descMax < 3 {
-		descMax = 3
-	}
-	lines := make([]string, 0, 16)
-	lines = append(lines, stTitle.Render(truncate(t.Title, inner-2)), "")
-	meta := []string{}
-	if t.CreatorName != "" {
-		meta = append(meta, "от "+t.CreatorName)
-	}
-	if t.Deadline != "" {
-		meta = append(meta, "󰔞 "+deadlineShort(t.Deadline))
-	}
-	if t.Project != "" {
-		meta = append(meta, t.Project)
-	}
-	if t.Stage != "" {
-		meta = append(meta, t.Stage)
-	}
-	meta = append(meta, "статус: "+statusName(t.Status))
-	lines = append(lines, stDim.Render("  "+strings.Join(meta, "  ·  ")), "")
+	lines = append(lines, "", "  "+m.stageTrackLine(inner-2),
+		"  "+m.cardMetaLine(),
+		stFaint.Render("  "+strings.Repeat("─", max(inner-4, 1))))
 	if t.Description != "" {
-		desc := wordwrapWrap(t.Description, inner-4, 2)
-		l := strings.Split(desc, "\n")
-		if len(l) > descMax {
-			// descMax строк ВКЛЮЧАЯ строку-эллипсис
-			l = append(l[:descMax-1], stDim.Render("  …"))
+		dl := strings.Split(wordwrapWrap(t.Description, inner-4, 2), "\n")
+		off := min(m.descOff, max(len(dl)-1, 0))
+		end := min(off+descMax, len(dl))
+		win := dl[off:end]
+		if end < len(dl) {
+			// индикатор вместо последней строки окна
+			win = append(win[:max(len(win)-1, 0)], stFaint.Render("  ещё ↓"))
 		}
-		lines = append(lines, l...)
+		lines = append(lines, win...)
 		lines = append(lines, "")
 	}
-	if t.ChatID > 0 {
+	if !m.twoPane() && t.ChatID > 0 {
 		lines = append(lines, stDim.Render("  󰭹 чат задачи · c"), "")
+	}
+	// карточка — полной высоты панели: пустоту добиваем перед меню (меню
+	// прижато к низу), иначе рамки панелей экрана разъезжаются
+	padTo := cardInner
+	switch m.overlay {
+	case ovStatus:
+		padTo = cardInner - (m.menuLen() + 3)
+	case ovDeadline:
+		padTo = cardInner - (len(deadlineOptions(m.api.now(), t.Deadline)) + 3)
+	}
+	for len(lines) < padTo {
+		lines = append(lines, "")
 	}
 	switch m.overlay {
 	case ovStatus:
@@ -484,19 +489,129 @@ func (m Model) taskCardPane() string {
 		lines = append(lines, "")
 		lines = append(lines, strings.Split(m.deadlineMenu(), "\n")...)
 	}
-	title := paneTitle("", "задача · #"+fmt.Sprint(t.ID), "", m.tab == tabTasks)
-	return box(title, lines, m.cardW, m.tab == tabTasks)
+	if len(lines) > cardInner {
+		lines = lines[:cardInner]
+	}
+	title := paneTitle("", fmt.Sprintf("#%d · %s", t.ID, t.Project), "", m.tab == tabTasks)
+	return box(title, lines, inner, m.tab == tabTasks)
+}
+
+// stageTrackLine — трек стадий проекта: пройдено «●» dim, текущая — плашка
+// цвета стадии, будущие «○» faint. Не влезает — окно вокруг текущей с «…».
+// Без стадий — плашка статуса.
+func (m Model) stageTrackLine(w int) string {
+	t := m.taskCard
+	st := m.api.StagesOf(t.GroupID)
+	if len(st) == 0 {
+		return pill(statusName(t.Status), cInk, cAccent)
+	}
+	cur := 0
+	for i, s := range st {
+		if s.ID == t.StageID {
+			cur = i
+			break
+		}
+	}
+	seg := func(lo, hi int) string {
+		var parts []string
+		if lo > 0 {
+			parts = append(parts, stFaint.Render("…"))
+		}
+		for i := lo; i <= hi; i++ {
+			if i > lo {
+				parts = append(parts, stFaint.Render("─"))
+			}
+			switch {
+			case i < cur:
+				parts = append(parts, stDim.Render("● "+st[i].Title))
+			case i == cur:
+				parts = append(parts, pill(st[i].Title, cInk, stageColor(st[i].Color)))
+			default:
+				parts = append(parts, stFaint.Render("○ "+st[i].Title))
+			}
+		}
+		if hi < len(st)-1 {
+			parts = append(parts, stFaint.Render("…"))
+		}
+		return strings.Join(parts, " ")
+	}
+	lo, hi := 0, len(st)-1
+	out := seg(lo, hi)
+	for lipgloss.Width(out) > w && hi > lo {
+		if cur-lo >= hi-cur {
+			lo++
+		} else {
+			hi--
+		}
+		out = seg(lo, hi)
+	}
+	return truncate(out, w)
+}
+
+// cardMetaLine — срок (как на доске), автор, бейдж новых комментариев.
+func (m Model) cardMetaLine() string {
+	t := m.taskCard
+	var parts []string
+	if d, ok := ParseDeadline(t.Deadline, m.srvLoc()); ok {
+		now := m.api.now().In(m.srvLoc())
+		day := d.In(m.srvLoc()).Format("2006-01-02")
+		switch {
+		case d.Before(now): // сегодняшний срок, прошедший по времени, — тоже просрочка
+			label := dueLabel(d, now)
+			if day == now.Format("2006-01-02") {
+				label = d.Format("15:04")
+			}
+			parts = append(parts, pill("просрочено "+label, cInk, cUrgent))
+		case day == now.Format("2006-01-02"):
+			parts = append(parts, pill(dueLabel(d, now), cInk, pulseColor(m.frame)))
+		default:
+			parts = append(parts, chip(dueLabel(d, now)))
+		}
+	} else {
+		parts = append(parts, stFaint.Render("без срока"))
+	}
+	if t.CreatorName != "" {
+		parts = append(parts, stDim.Render("от "+t.CreatorName))
+	}
+	if t.NewComments > 0 {
+		parts = append(parts, stBadge.Render("✎ "+fmt.Sprint(t.NewComments)))
+	}
+	return strings.Join(parts, "  ")
+}
+
+// taskChatPane — правая панель экрана задачи: чат задачи или заглушка.
+func (m Model) taskChatPane() string {
+	if m.taskCard.ChatID <= 0 || m.active == nil {
+		return box(paneTitle("", "чат задачи", "", false),
+			[]string{"", stDim.Render("у задачи нет чата")}, m.dialW, false)
+	}
+	return m.dialogPane()
 }
 
 func (m Model) statusMenu() string {
-	opts := statusOptions(m.taskCard.Status)
-	rows := make([]string, 0, len(opts))
-	for i, o := range opts {
-		line := " " + o.name
-		if i == m.statusIdx {
-			line = stCursor.Render("▌") + " " + stTitle.Render(o.name)
+	var rows []string
+	if st := m.api.StagesOf(m.taskCard.GroupID); len(st) > 0 {
+		// меню стадий проекта: текущая помечена «●»
+		for i, s := range st {
+			mark := "○ "
+			if s.ID == m.taskCard.StageID {
+				mark = "● "
+			}
+			line := " " + mark + s.Title
+			if i == m.statusIdx {
+				line = stCursor.Render("▌") + " " + stTitle.Render(mark+s.Title)
+			}
+			rows = append(rows, line)
 		}
-		rows = append(rows, line)
+	} else {
+		opts := statusOptions(m.taskCard.Status)
+		for i, o := range opts {
+			line := " " + o.name
+			if i == m.statusIdx {
+				line = stCursor.Render("▌") + " " + stTitle.Render(o.name)
+			}
+			rows = append(rows, line)
+		}
 	}
 	// меню вложено в панель: по 1 колонке на паддинг панели с каждой стороны
 	return box("", rows, m.cardW-4, true)
