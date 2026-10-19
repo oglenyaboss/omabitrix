@@ -544,3 +544,86 @@ func TestFilterAnyTab(t *testing.T) {
 		t.Fatalf("/ не включил фильтр на задачах: %v", m2.focus)
 	}
 }
+
+func TestFlatTasksFilter(t *testing.T) {
+	tasks := []Task{
+		{ID: 1, Title: "Обновить фид", Deadline: "2026-10-18 10:00:00"},
+		{ID: 2, Title: "Отчёт Roistat", Deadline: "2026-10-19 15:00:00"},
+	}
+	m := viewModel(120, 36, nil, tasks, nil, nil, nil)
+	m.tab = tabTasks
+	m.filter = "фид"
+	rows := m.flatTasks()
+	if len(rows) != 1 || rows[0].task.ID != 1 {
+		t.Fatalf("фильтр «фид»: %d строк, хочу только задачу 1", len(rows))
+	}
+	m.filter = ""
+	if n := len(m.flatTasks()); n != 2 {
+		t.Fatalf("пустой фильтр: %d строк, хочу 2", n)
+	}
+}
+
+func TestVisibleNotifyFilter(t *testing.T) {
+	notify := []NotifyItem{
+		{ID: "1", Title: "A", Text: "про фид"},
+		{ID: "2", Title: "B"},
+	}
+	m := viewModel(120, 36, nil, nil, notify, nil, nil)
+	m.tab = tabNotify
+	m.filter = "фид"
+	vn := m.visibleNotify()
+	if len(vn) != 1 || vn[0].ID != "1" {
+		t.Fatalf("фильтр «фид»: %d уведов, хочу только ID 1", len(vn))
+	}
+	if m.visibleCount() != 1 {
+		t.Fatalf("visibleCount с фильтром: %d, хочу 1", m.visibleCount())
+	}
+	m.filter = ""
+	if n := len(m.visibleNotify()); n != 2 {
+		t.Fatalf("пустой фильтр: %d уведов, хочу 2", n)
+	}
+}
+
+func TestFilterRowInView(t *testing.T) {
+	tasks := []Task{
+		{ID: 1, Title: "Обновить фид", Deadline: "2026-10-18 10:00:00"},
+		{ID: 2, Title: "Отчёт Roistat", Deadline: "2026-10-19 15:00:00"},
+	}
+	m := viewModel(120, 36, nil, tasks, nil, nil, nil)
+	m.tab = tabTasks
+	m.filter = "фид"
+	v := m.View().Content
+	if !strings.Contains(v, "фильтр: фид") {
+		t.Fatalf("строки фильтра нет в панели:\n%s", v)
+	}
+	// опустевшая корзина «сегодня» — без заголовка
+	if strings.Contains(v, "СЕГОДНЯ") {
+		t.Fatalf("заголовок пустой корзины:\n%s", v)
+	}
+	for i, line := range strings.Split(v, "\n") {
+		if lw := lipgloss.Width(line); lw > 120 {
+			t.Fatalf("строка %d шире 120: %d", i, lw)
+		}
+	}
+}
+
+func TestNotifyFilterEnterClearsUnread(t *testing.T) {
+	notify := []NotifyItem{
+		{ID: "1", Title: "B", TaskID: 8, Unread: true},
+		{ID: "2", Title: "A", Text: "про фид", TaskID: 7, Unread: true},
+	}
+	m := viewModel(120, 36, nil, nil, notify, nil, nil)
+	m.tab = tabNotify
+	m.filter = "фид"
+	if len(m.visibleNotify()) != 1 || m.visibleNotify()[0].ID != "2" {
+		t.Fatalf("фильтр: %d уведов, хочу ID 2", len(m.visibleNotify()))
+	}
+	m1, _ := keyPress(m, "enter")
+	if m1.cardReq != 7 {
+		t.Fatalf("enter взял не тот элемент: cardReq=%d, хочу 7", m1.cardReq)
+	}
+	// Unread гасим в исходном списке по ID, сосед не тронут
+	if m1.notify[1].Unread || !m1.notify[0].Unread {
+		t.Fatalf("Unread: %+v", m1.notify)
+	}
+}
