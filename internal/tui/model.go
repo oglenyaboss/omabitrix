@@ -285,24 +285,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sentMsg:
 		m.sending = false
+		same := m.active != nil && m.active.DialogID == msg.dialogID
 		if msg.err != nil {
 			m.loadErr = "не отправлено: " + msg.err.Error()
-			m.replyActive()
+			if same {
+				// текст вернули в поле; допечатанное за время отправки не трогаем
+				if m.reply.Value() == "" {
+					m.reply.SetValue(msg.text)
+				} else {
+					m.reply.SetValue(msg.text + " " + m.reply.Value())
+				}
+				m.replyActive()
+			} else {
+				// юзер уже в другом чате — неотправленное ждёт черновиком
+				if d := m.drafts[msg.dialogID]; d == "" {
+					m.drafts[msg.dialogID] = msg.text
+				} else {
+					m.drafts[msg.dialogID] = msg.text + " " + d
+				}
+			}
 			return m, nil
 		}
-		m.reply.Reset()
-		delete(m.drafts, m.active.DialogID)
-		m.focus = focusList
-		now := m.api.now()
-		key, label := DayInfo(now.Format(time.RFC3339), now)
-		m.history = append(m.history, Message{
-			ID: msg.id, Text: msg.text,
-			Time: now.Local().Format("15:04"), DayKey: key, DayLabel: label,
-			Mine: true,
-		})
+		if same {
+			// поле чистое с момента отправки — черновик больше не нужен
+			if m.reply.Value() == "" {
+				delete(m.drafts, msg.dialogID)
+			}
+			now := m.api.now()
+			key, label := DayInfo(now.Format(time.RFC3339), now)
+			m.history = append(m.history, Message{
+				ID: msg.id, Text: msg.text,
+				Time: now.Local().Format("15:04"), DayKey: key, DayLabel: label,
+				Mine: true,
+			})
+			m.renderHistory()
+			m.vp.GotoBottom()
+		}
 		m.api.chatsAt = time.Time{} // превью списка обновится при следующем Chats()
-		m.renderHistory()
-		m.vp.GotoBottom()
 		return m, m.loadCmd("chats")
 
 	case statusMsg:
@@ -533,17 +552,19 @@ func (m Model) refreshActiveCmd() tea.Cmd {
 }
 
 type sentMsg struct {
-	id   int64
-	text string
-	err  error
+	dialogID string
+	id       int64
+	text     string
+	err      error
 }
 
-func (m Model) sendCmd() tea.Cmd {
+// sendCmd — текст приходит параметром: поле уже очищено при отправке.
+func (m Model) sendCmd(text string) tea.Cmd {
 	api, ctx := m.api, m.ctx
-	dialogID, text := m.active.DialogID, strings.TrimSpace(m.reply.Value())
+	dialogID := m.active.DialogID
 	return func() tea.Msg {
 		id, err := api.Send(ctx, dialogID, text)
-		return sentMsg{id: id, text: text, err: err}
+		return sentMsg{dialogID: dialogID, id: id, text: text, err: err}
 	}
 }
 

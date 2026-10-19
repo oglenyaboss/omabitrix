@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -70,27 +71,27 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// вода ответа: всё уходит в textarea, кроме esc
+	// вода ответа: всё уходит в textarea, кроме esc/ctrl+c (оба берут черновик)
 	if m.focus == focusReply {
 		switch msg.String() {
-		case "esc":
+		case "esc", "ctrl+c":
 			if m.active != nil && m.reply.Value() != "" {
 				m.drafts[m.active.DialogID] = m.reply.Value()
 			}
 			m.focus = focusList
 			m.layout()
 			return m, nil
-		case "ctrl+c":
-			m.focus = focusList
-			return m, nil
 		}
 		var cmd tea.Cmd
 		m.reply, cmd = m.reply.Update(msg)
 		if msg.Code == tea.KeyEnter {
-			text := m.reply.Value()
-			if trimNonEmpty(text) && m.active != nil && !m.sending {
+			// оптимистичная отправка: текст забираем и чистим поле сразу,
+			// фокус остаётся — допечатанное переживёт ответ
+			text := strings.TrimSpace(m.reply.Value())
+			if text != "" && m.active != nil && !m.sending {
+				m.reply.Reset()
 				m.sending = true
-				return m, m.sendCmd()
+				return m, m.sendCmd(text)
 			}
 		}
 		return m, cmd
@@ -339,13 +340,4 @@ func (m Model) statusConfirm() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, m.statusCmd(m.taskCard.ID, opts[m.statusIdx].code)
-}
-
-func trimNonEmpty(s string) bool {
-	for _, r := range s {
-		if r != ' ' && r != '\n' && r != '\t' && r != '\r' {
-			return true
-		}
-	}
-	return false
 }

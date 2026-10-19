@@ -369,3 +369,88 @@ func TestMouseClickCardGateAndTabClamp(t *testing.T) {
 		t.Fatalf("переключение вкладки не клампит курсор: %d", got)
 	}
 }
+
+func TestReplySendKeepsFocusAndTyped(t *testing.T) {
+	active := &Chat{DialogID: "chat1"}
+
+	// enter: текст уходит сразу, поле чистое, фокус и sending на месте
+	m := viewModel(120, 36, nil, nil, nil, active, nil)
+	m.replyActive()
+	m.reply.SetValue("привет")
+	mm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m1 := mm.(Model)
+	if m1.reply.Value() != "" || !m1.sending || m1.focus != focusReply || cmd == nil {
+		t.Fatalf("enter: value=%q sending=%v focus=%v cmd=%v",
+			m1.reply.Value(), m1.sending, m1.focus, cmd)
+	}
+
+	// ответ пришёл: допечатанное «ещё» не стёрто, из поля не выкинуло
+	m1.reply.SetValue("ещё")
+	mm2, _ := m1.Update(sentMsg{dialogID: "chat1", id: 5, text: "привет"})
+	m2 := mm2.(Model)
+	if m2.reply.Value() != "ещё" || m2.focus != focusReply {
+		t.Fatalf("sentMsg: value=%q focus=%v", m2.reply.Value(), m2.focus)
+	}
+	if n := len(m2.history); n == 0 || m2.history[n-1].Text != "привет" {
+		t.Fatalf("sentMsg: последнее сообщение: %+v", m2.history)
+	}
+
+	// ошибка отправки: текст возвращается в пустое поле
+	m3 := viewModel(120, 36, nil, nil, nil, active, nil)
+	m3.replyActive()
+	mm4, _ := m3.Update(sentMsg{dialogID: "chat1", err: errors.New("x"), text: "привет"})
+	if got := mm4.(Model).reply.Value(); got != "привет" {
+		t.Fatalf("ошибка отправки: value=%q, хочу «привет»", got)
+	}
+
+	// ctrl+c в поле — как esc: черновик сохранён, фокус в списке
+	m5 := viewModel(120, 36, nil, nil, nil, active, nil)
+	m5.replyActive()
+	m5.reply.SetValue("черн")
+	mm6, _ := m5.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	m6 := mm6.(Model)
+	if m6.focus != focusList || m6.drafts["chat1"] != "черн" {
+		t.Fatalf("ctrl+c: focus=%v draft=%q", m6.focus, m6.drafts["chat1"])
+	}
+
+	// e) успех, но юзер уже в другом чате: чужую историю не трогаем
+	m7 := viewModel(120, 36, nil, nil, nil, active, nil)
+	m7.replyActive()
+	m7.reply.SetValue("привет")
+	mm8, _ := m7.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m8 := mm8.(Model)
+	m8.active = &Chat{DialogID: "chat2"}
+	mm9, _ := m8.Update(sentMsg{dialogID: "chat1", id: 5, text: "привет"})
+	m9 := mm9.(Model)
+	if len(m9.history) != 0 {
+		t.Fatalf("чужому чату дописали сообщение: %+v", m9.history)
+	}
+
+	// f) ошибка при уходе в другой чат: текст — черновиком chat1, поле chat2 цело
+	m10 := viewModel(120, 36, nil, nil, nil, active, nil)
+	m10.replyActive()
+	m10.reply.SetValue("привет")
+	mm11, _ := m10.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m11 := mm11.(Model)
+	m11.active = &Chat{DialogID: "chat2"}
+	m11.reply.SetValue("другое")
+	m11.focus = focusList
+	mm12, _ := m11.Update(sentMsg{dialogID: "chat1", err: errors.New("x"), text: "привет"})
+	m12 := mm12.(Model)
+	if m12.drafts["chat1"] != "привет" || m12.reply.Value() != "другое" || m12.focus != focusList {
+		t.Fatalf("ошибка при смене чата: draft=%q value=%q focus=%v",
+			m12.drafts["chat1"], m12.reply.Value(), m12.focus)
+	}
+
+	// g) диалог закрыли во время отправки: успех без active — без паники
+	m13 := viewModel(120, 36, nil, nil, nil, active, nil)
+	m13.replyActive()
+	m13.reply.SetValue("привет")
+	mm14, _ := m13.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m14 := mm14.(Model)
+	m14.active = nil
+	mm15, _ := m14.Update(sentMsg{dialogID: "chat1", id: 5, text: "привет"})
+	if len(mm15.(Model).history) != 0 {
+		t.Fatal("успех без active дописал историю")
+	}
+}
