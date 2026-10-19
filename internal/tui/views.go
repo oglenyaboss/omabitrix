@@ -258,6 +258,18 @@ func (m Model) filterLine() []string {
 	return []string{stDim.Render("фильтр: " + m.filter), ""}
 }
 
+// replySep — разделитель «── ответ/правка» во всю ширину панели.
+func (m Model) replySep() string {
+	s := "── ответ "
+	if m.editID > 0 {
+		s = "── правка "
+	}
+	if fill := m.dialW - lipgloss.Width(s); fill > 0 {
+		s += strings.Repeat("─", fill)
+	}
+	return s
+}
+
 func (m Model) dialogPane() string {
 	if m.active == nil {
 		return box(paneTitle("", "диалог", "", false),
@@ -274,14 +286,7 @@ func (m Model) dialogPane() string {
 		lines = append(lines, "", stErr.Render("удалить сообщение? y/n"))
 	case m.focus == focusReply:
 		// разделитель отделяет поле от истории: «── ответ» или «── правка»
-		sep := "── ответ "
-		if m.editID > 0 {
-			sep = "── правка "
-		}
-		if fill := m.dialW - lipgloss.Width(sep); fill > 0 {
-			sep += strings.Repeat("─", fill)
-		}
-		lines = append(lines, stAccent.Render(sep))
+		lines = append(lines, stAccent.Render(m.replySep()))
 		if m.editID == 0 && m.replyTo.ID > 0 {
 			q := m.replyTo
 			name := q.Name
@@ -294,7 +299,18 @@ func (m Model) dialogPane() string {
 	case m.focus == focusSearch:
 		lines = append(lines, "", m.searchIn.View())
 	default:
-		lines = append(lines, "", stDim.Render(" r — ответить · колесо — скролл"))
+		if m.taskOpen {
+			// на экране задачи поле ответа видно всегда: без фокуса — приглушённый
+			// разделитель и плейсхолдер (или черновик)
+			lines = append(lines, stDim.Render(m.replySep()))
+			if v := m.reply.Value(); v != "" {
+				lines = append(lines, stFaint.Render(truncate(v, m.dialW-4)))
+			} else {
+				lines = append(lines, stFaint.Render("enter или r — написать"))
+			}
+		} else {
+			lines = append(lines, "", stDim.Render(" r — ответить · колесо — скролл"))
+		}
 	}
 	title := paneTitle("", truncate(m.active.Title, m.dialW-8), unreadExtra(m.active.Counter), m.focus == focusReply)
 	return box(title, lines, m.dialW, m.focus == focusReply)

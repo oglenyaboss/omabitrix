@@ -329,6 +329,111 @@ func TestBoardHiddenColumns(t *testing.T) {
 	}
 }
 
+// Подсветка совпадает с курсором: selRow — номер карточки курсора в своей
+// колонке с нуля (раньше съезжал на единицу), в рендере подсвечена ровно
+// карточка под курсором.
+func TestBoardSelRowMatchesCursor(t *testing.T) {
+	tasks := make([]Task, 0, 9)
+	for ci, stage := range []string{"A", "B", "C"} {
+		for r := 0; r < 3; r++ {
+			tasks = append(tasks, Task{ID: int64(ci*3 + r + 1),
+				Title: fmt.Sprintf("%s%d", stage, r), Role: "do",
+				Stage: stage, StageSort: ci})
+		}
+	}
+	m := boardModel(tasks)
+	cols := m.boardColumns()
+	rows := m.flatTasks()
+	if len(rows) != 9 {
+		t.Fatalf("строк %d, хочу 9", len(rows))
+	}
+	// грань карточки: у выбранной — стиль курсора, у соседних — трек
+	curP := strings.TrimSuffix(stCursor.Render("╭"), "\x1b[m")
+	trkP := strings.TrimSuffix(stTrack.Render("╭"), "\x1b[m")
+	for i := range rows {
+		mm := m
+		mm.cursor = i
+		g := mm.boardGeom(cols, rows)
+		want := 0
+		for j := 0; j < i; j++ {
+			if rows[j].col == rows[i].col {
+				want++
+			}
+		}
+		if g.selCol != rows[i].col || g.selRow != want {
+			t.Fatalf("cursor=%d: sel=(%d,%d), хочу (%d,%d)",
+				i, g.selCol, g.selRow, rows[i].col, want)
+		}
+		var selLine, prevLine string
+		lines := strings.Split(mm.viewBoard(), "\n")
+		for j, l := range lines {
+			if strings.Contains(l, rows[i].task.Title) {
+				selLine = lines[j-1] // грань карточки — строка над титулом
+			}
+			if want > 0 && strings.Contains(l, rows[i-1].task.Title) {
+				prevLine = lines[j-1]
+			}
+		}
+		// грань карточки — строка над титулом
+		if !strings.Contains(selLine, curP) {
+			t.Fatalf("cursor=%d: карточка %q не подсвечена", i, rows[i].task.Title)
+		}
+		if want > 0 && strings.Contains(prevLine, curP) {
+			t.Fatalf("cursor=%d: подсвечена соседняя карточка", i)
+		}
+		if want > 0 && !strings.Contains(prevLine, trkP) {
+			t.Fatalf("cursor=%d: у соседней карточки чужая грань", i)
+		}
+	}
+}
+
+// Колонка с прокруткой: задач больше, чем влезает, курсор внизу — подсвечена
+// нижняя карточка и она в кадре.
+func TestBoardSelRowScrolledColumn(t *testing.T) {
+	var tasks []Task
+	for ci, stage := range []string{"A", "B"} {
+		for r := 0; r < 3; r++ {
+			tasks = append(tasks, Task{ID: int64(len(tasks) + 1),
+				Title: fmt.Sprintf("x%d", len(tasks)+1), Role: "do",
+				Stage: stage, StageSort: ci})
+		}
+	}
+	for r := 0; r < 10; r++ {
+		tasks = append(tasks, Task{ID: int64(len(tasks) + 1),
+			Title: fmt.Sprintf("c%d", r), Role: "do",
+			Stage: "C", StageSort: 2})
+	}
+	m := boardModel(tasks)
+	cols := m.boardColumns()
+	rows := m.flatTasks()
+	m.cursor = len(rows) - 1 // низ третьей колонки
+	g := m.boardGeom(cols, rows)
+	if g.selCol != 2 || g.selRow != 9 {
+		t.Fatalf("sel=(%d,%d), хочу (2,9)", g.selCol, g.selRow)
+	}
+	win, off := colCardWindow(cols[2], g.selRow, g.colH-3)
+	if win < 1 || g.selRow < off || g.selRow >= off+win {
+		t.Fatalf("курсор вне окна: win=%d off=%d sel=%d", win, off, g.selRow)
+	}
+	curP := strings.TrimSuffix(stCursor.Render("╭"), "\x1b[m")
+	var selLine, prevLine string
+	lines := strings.Split(m.viewBoard(), "\n")
+	for j, l := range lines {
+		if strings.Contains(l, "c9") {
+			selLine = lines[j-1] // грань карточки — строка над титулом
+		}
+		if strings.Contains(l, "c8") {
+			prevLine = lines[j-1]
+		}
+	}
+	if !strings.Contains(selLine, curP) {
+		t.Fatal("нижняя карточка не подсвечена")
+	}
+	if prevLine == "" || strings.Contains(prevLine, curP) {
+		t.Fatal("подсвечена не только нижняя карточка")
+	}
+}
+
 // Сегодняшний срок, прошедший по времени, — просрочка (не «сегодня»),
 // и плашка помещается в карточку.
 func TestBoardOverdueToday(t *testing.T) {

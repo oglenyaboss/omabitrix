@@ -287,6 +287,7 @@ func (m Model) boardGeom(cols []boardCol, rows []taskRow) boardGeom {
 	}
 	if m.cursor >= 0 && m.cursor < len(rows) {
 		g.selCol = rows[m.cursor].col
+		g.selRow = 0 // номер строки курсора в своей колонке, считаем с нуля
 		for i := 0; i < m.cursor; i++ {
 			if rows[i].col == g.selCol {
 				g.selRow++

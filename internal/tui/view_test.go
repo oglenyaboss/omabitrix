@@ -676,17 +676,11 @@ func TestFollowOnNav(t *testing.T) {
 	m.tab = tabTasks
 	m.taskOpen = true
 	m.taskCard = m.flatTasks()[0].task
-	// уход с открытой задачи колесом — тик карточки; возврат — тоже
-	for _, step := range []struct {
-		btn    tea.MouseButton
-		follow bool
-	}{{tea.MouseWheelDown, true}, {tea.MouseWheelUp, false}} {
-		before := m.followSeq
-		mm, cmd := m.Update(tea.MouseWheelMsg{X: 5, Y: 10, Button: step.btn})
-		m = mm.(Model)
-		if got := cmd != nil && m.followSeq == before+1; got != step.follow {
-			t.Fatalf("колесо: follow=%v, ждали %v", got, step.follow)
-		}
+	// колесо на экране задачи курсор не двигает: над карточкой скроллит описание
+	mm, cmd := m.Update(tea.MouseWheelMsg{X: 5, Y: 10, Button: tea.MouseWheelDown})
+	m = mm.(Model)
+	if cmd != nil || m.descOff != 3 || m.cursor != 0 {
+		t.Fatalf("колесо над карточкой: descOff=%d cursor=%d cmd=%v", m.descOff, m.cursor, cmd)
 	}
 }
 

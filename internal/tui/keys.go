@@ -249,6 +249,15 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			switch {
+			case key.Matches(msg, km.Open) && m.twoPane():
+				// enter на карточке — в поле ответа (узкий экран — как раньше)
+				if m.active == nil {
+					m.flash = "у задачи нет чата"
+					m.flashAt = m.api.now()
+					return m, nil
+				}
+				m.replyActive()
+				return m, m.reply.Focus()
 			case key.Matches(msg, km.Down):
 				m.descOff++
 				return m, nil

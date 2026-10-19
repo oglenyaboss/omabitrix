@@ -25,6 +25,7 @@ type keyMap struct {
 	Filter     key.Binding // /
 	Search     key.Binding // / поиск по истории диалога
 	Reply      key.Binding // r
+	ReplyField key.Binding // enter на карточке экрана задачи — в поле ответа
 	Select     key.Binding // v
 	ReplyQuote key.Binding // r на выделенном
 	Edit       key.Binding // e на выделенном
@@ -130,6 +131,10 @@ var km = keyMap{
 		key.WithKeys("r"),
 		key.WithHelp("r", "написать"),
 	),
+	ReplyField: key.NewBinding(
+		key.WithKeys("enter"),
+		key.WithHelp("enter/r", "написать"),
+	),
 	Select: key.NewBinding(
 		key.WithKeys("v"),
 		key.WithHelp("v", "выделить"),
@@ -229,7 +234,7 @@ func (m Model) shortHelp() []key.Binding {
 		return []key.Binding{km.Up, km.Down, km.Back, km.Help}
 	case m.tab == tabTasks && m.taskOpen:
 		// чат задачи открыт справа — подсказки экрана задачи важнее
-		return []key.Binding{km.StageMove, km.Status, km.Deadline, km.Reply, km.TaskChat, km.Browser, km.Quit, km.Help}
+		return []key.Binding{km.StageMove, km.Status, km.Deadline, km.ReplyField, km.TaskChat, km.Browser, km.Quit, km.Help}
 	case m.sel >= 0:
 		return []key.Binding{km.ReplyQuote, km.Edit, km.Delete, km.Like, km.Mention, km.Cancel, km.Help}
 	case m.active != nil:

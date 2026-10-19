@@ -985,9 +985,14 @@ func (m Model) mouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	// клик по списку чатов работает и из поля ответа: фильтр/поиск — нет
-	if m.focus != focusList &&
-		!(m.tab == tabChats && m.focus == focusReply && msg.X <= m.listW+4) {
-		return m, nil
+	if m.focus != focusList {
+		// из поля ответа клик работает по панели списка чатов и левой панели
+		// экрана задачи (вернуть фокус на карточку)
+		toList := m.tab == tabChats && msg.X <= m.listW+4 ||
+			m.tab == tabTasks && m.taskOpen && msg.X <= m.cardW+4
+		if !(m.focus == focusReply && toList) {
+			return m, nil
+		}
 	}
 	if msg.Button == tea.MouseLeft {
 		return m.mouseLeft(msg)
@@ -998,6 +1003,23 @@ func (m Model) mouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 // wheel: над диалогом — скролл истории, над списком — курсор.
 func (m Model) mouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 	up := msg.Button == tea.MouseWheelUp
+	if m.taskOpen && m.tab == tabTasks {
+		// экран задачи: правая панель — история чата, левая — описание
+		if m.active != nil && msg.X > m.cardW+4 {
+			if up {
+				m.vp.ScrollUp(3)
+			} else {
+				m.vp.ScrollDown(3)
+			}
+			return m, nil
+		}
+		if up {
+			m.descOff = max(m.descOff-3, 0)
+		} else {
+			m.descOff += 3
+		}
+		return m, nil
+	}
 	if m.active != nil && msg.X > m.listW+4 {
 		if up {
 			m.vp.ScrollUp(3)
@@ -1108,6 +1130,21 @@ func (m Model) mouseLeft(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		}
 	case tabTasks:
 		if m.taskOpen {
+			// экран задачи: клик по правой панели — фокус в поле ответа,
+			// по левой — назад к карточке (черновик остаётся)
+			if msg.X > m.cardW+4 {
+				if m.active != nil && m.focus != focusReply {
+					m.replyActive()
+					return m, m.reply.Focus()
+				}
+				return m, nil
+			}
+			if m.focus == focusReply {
+				m.saveDraft()
+				m.reply.Blur()
+				m.focus = focusList
+				m.layout()
+			}
 			return m, nil
 		}
 		// доска: клик по карточке — курсор, повторный по выбранной — открыть;
