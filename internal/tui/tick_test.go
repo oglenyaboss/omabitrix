@@ -273,3 +273,99 @@ func TestHistoryMsgMergesOld(t *testing.T) {
 		t.Fatalf("тик стёр старьё: len=%d first=%d", len(got.history), got.history[0].ID)
 	}
 }
+
+// Карточка следует за курсором: колесо/листание ставит тик 250 мс, живёт
+// только последний — иначе быстрое листание копило бы запросы к порталу.
+func TestFollowCardSchedulesTick(t *testing.T) {
+	tasks := []Task{
+		{ID: 1, Title: "один"},
+		{ID: 2, Title: "два"},
+	}
+	m := viewModel(120, 36, nil, tasks, nil, nil, nil)
+	m.tab = tabTasks
+	m.taskOpen = true
+	m.taskCard = tasks[0]
+	m.taskIdx = 0
+	m.cursor = 1 // курсор на задаче 2, карточка задачи 1
+	seq := m.followSeq
+	cmd := m.followCard()
+	if cmd == nil {
+		t.Fatal("followCard не вернул команду для другой задачи под курсором")
+	}
+	if m.followSeq != seq+1 {
+		t.Fatalf("followSeq=%d, хочу %d", m.followSeq, seq+1)
+	}
+	// задержка 250 мс — тик дойдёт и принесёт зафиксированные seq/id
+	fm, ok := cmd().(cardFollowMsg)
+	if !ok {
+		t.Fatalf("тик вернул %T, хочу cardFollowMsg", cmd())
+	}
+	if fm.seq != seq+1 || fm.id != 2 {
+		t.Fatalf("cardFollowMsg={%d %d}, хочу seq=%d id=2", fm.seq, fm.id, seq+1)
+	}
+}
+
+func TestFollowCardStaleSeqDropped(t *testing.T) {
+	tasks := []Task{
+		{ID: 1, Title: "один"},
+		{ID: 2, Title: "два"},
+	}
+	m := viewModel(120, 36, nil, tasks, nil, nil, nil)
+	m.tab = tabTasks
+	m.taskOpen = true
+	m.taskCard = tasks[0]
+	m.cursor, m.taskIdx = 1, 0
+	m.followSeq = 5 // пока тик спал, листание продолжилось
+	m.cardReq = 1
+	mm, cmd := m.Update(cardFollowMsg{seq: 4, id: 2})
+	got := mm.(Model)
+	if cmd != nil {
+		t.Fatal("устаревший тик не должен запрашивать карточку")
+	}
+	if got.cardReq != 1 {
+		t.Fatalf("cardReq=%d, устаревший тик не должен его менять", got.cardReq)
+	}
+	if got.taskIdx != 0 {
+		t.Fatalf("taskIdx=%d, устаревший тик не должен его двигать", got.taskIdx)
+	}
+}
+
+func TestFollowCardAppliesLatest(t *testing.T) {
+	tasks := []Task{
+		{ID: 1, Title: "один"},
+		{ID: 2, Title: "два"},
+	}
+	m := viewModel(120, 36, nil, tasks, nil, nil, nil)
+	m.tab = tabTasks
+	m.taskOpen = true
+	m.taskCard = tasks[0]
+	m.cursor, m.taskIdx = 1, 0
+	seq := m.followSeq
+	if cmd := m.followCard(); cmd == nil {
+		t.Fatal("followCard не вернул команду")
+	}
+	mm, cmd := m.Update(cardFollowMsg{seq: seq + 1, id: 2})
+	got := mm.(Model)
+	if cmd == nil {
+		t.Fatal("актуальный тик не запросил карточку")
+	}
+	if got.cardReq != 2 {
+		t.Fatalf("cardReq=%d, хочу 2", got.cardReq)
+	}
+	if got.taskIdx != got.cursor {
+		t.Fatalf("taskIdx=%d cursor=%d, карточка не догнала курсор", got.taskIdx, got.cursor)
+	}
+}
+
+func TestFollowCardRequiresOpenCard(t *testing.T) {
+	tasks := []Task{
+		{ID: 1, Title: "один"},
+		{ID: 2, Title: "два"},
+	}
+	m := viewModel(120, 36, nil, tasks, nil, nil, nil)
+	m.tab = tabTasks
+	m.cursor = 1 // карточка не открыта — следовать не за чем
+	if cmd := m.followCard(); cmd != nil {
+		t.Fatal("followCard не должен работать без открытой карточки")
+	}
+}

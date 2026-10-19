@@ -73,6 +73,7 @@ type Model struct {
 	taskOpen    bool
 	cardReq     int64 // последний запрошенный id — защита от гонки ответов
 	cardLoading bool  // карточка ещё грузится — в панели «загрузка…»
+	followSeq   int   // тик «карточка за курсором»: живёт только последний
 	statusIdx   int
 	deadlineIdx int
 
@@ -365,6 +366,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cursor = m.taskIdx
 		return m, nil
 
+	case cardFollowMsg:
+		// карточка догоняет курсор: живёт только последний тик и только
+		// если курсор за задержку не ушёл с задачи
+		if msg.seq != m.followSeq || !m.taskOpen || m.tab != tabTasks {
+			return m, nil
+		}
+		rows := m.flatTasks()
+		if m.cursor >= len(rows) || rows[m.cursor].task.ID != msg.id {
+			return m, nil
+		}
+		m.taskIdx = m.cursor
+		return m, m.requestCard(msg.id)
+
 	case tea.MouseClickMsg:
 		return m.mouseClick(msg)
 
@@ -635,6 +649,32 @@ func (m Model) loadTaskCardCmd(id int64) tea.Cmd {
 	}
 }
 
+type cardFollowMsg struct {
+	seq int
+	id  int64
+}
+
+// followCard — карточка следует за курсором с задержкой 250 мс: при быстром
+// листании не копится очередь запросов (портал троттлит 500 мс).
+func (m *Model) followCard() tea.Cmd {
+	if m.tab != tabTasks || !m.taskOpen {
+		return nil
+	}
+	rows := m.flatTasks()
+	if m.cursor < 0 || m.cursor >= len(rows) {
+		return nil
+	}
+	id := rows[m.cursor].task.ID
+	if id == m.taskCard.ID && !m.cardLoading {
+		return nil
+	}
+	m.followSeq++
+	seq := m.followSeq
+	return tea.Tick(250*time.Millisecond, func(time.Time) tea.Msg {
+		return cardFollowMsg{seq: seq, id: id}
+	})
+}
+
 type readAllMsg struct{ err error }
 
 func (m Model) readAllCmd() tea.Cmd {
@@ -680,11 +720,13 @@ func (m Model) mouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 	if up {
 		if m.cursor > 0 {
 			m.cursor--
+			return m, m.followCard()
 		}
 		return m, nil
 	}
 	if m.cursor < m.visibleCount()-1 {
 		m.cursor++
+		return m, m.followCard()
 	}
 	return m, nil
 }
