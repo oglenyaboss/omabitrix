@@ -59,8 +59,3 @@ var authorPalette = []compat.AdaptiveColor{
 func authorStyle(id int64) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(authorPalette[int(id)%len(authorPalette)])
 }
-
-// helpKey — «j/k» акцентом + описание тускло.
-func help(key, desc string) string {
-	return stHelpKey.Render(key) + stHelpDesc.Render(" "+desc)
-}

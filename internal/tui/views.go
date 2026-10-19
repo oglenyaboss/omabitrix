@@ -173,7 +173,7 @@ func (m Model) filterLine() []string {
 	if m.focus == focusFilter {
 		return []string{m.filterIn.View(), ""}
 	}
-	return []string{stDim.Render("фильтр: "+m.filter), ""}
+	return []string{stDim.Render("фильтр: " + m.filter), ""}
 }
 
 func (m Model) dialogPane() string {

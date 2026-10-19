@@ -151,8 +151,8 @@ func firstLines(s string, n int) string {
 // (как и в v1 — Type-свитчи оверлеев её не ловили).
 func keyPress(m Model, key string) (Model, tea.Cmd) {
 	msg := tea.KeyPressMsg{Code: []rune(key)[0], Text: key}
-	mm, _ := m.Update(msg)
-	return mm.(Model), nil
+	mm, cmd := m.Update(msg)
+	return mm.(Model), cmd
 }
 
 func TestStatusOverlayKeys(t *testing.T) {
@@ -625,5 +625,50 @@ func TestNotifyFilterEnterClearsUnread(t *testing.T) {
 	// Unread гасим в исходном списке по ID, сосед не тронут
 	if m1.notify[1].Unread || !m1.notify[0].Unread {
 		t.Fatalf("Unread: %+v", m1.notify)
+	}
+}
+
+func TestBrowserKey(t *testing.T) {
+	tasks := []Task{{ID: 1, Title: "a"}, {ID: 2, Title: "b"}}
+	m := viewModel(120, 36, nil, tasks, nil, nil, nil)
+	m.tab = tabTasks
+	m2, cmd := keyPress(m, "o")
+	if cmd != nil || m2.flash != "нечего открыть в браузере" {
+		t.Fatalf("без портала: cmd=%v flash=%q", cmd != nil, m2.flash)
+	}
+	m.api.Portal = "https://x.bitrix24.ru"
+	if _, cmd := keyPress(m, "o"); cmd == nil {
+		t.Fatal("o на задаче не дал команду открытия")
+	}
+}
+
+func TestFollowOnNav(t *testing.T) {
+	tasks := []Task{{ID: 1, Title: "a"}, {ID: 2, Title: "b"}}
+	m := viewModel(120, 36, nil, tasks, nil, nil, nil)
+	m.tab = tabTasks
+	m.taskOpen = true
+	m.taskCard = m.flatTasks()[0].task
+	// уход с открытой задачи — тик карточки; возврат на неё — запрос не нужен
+	for _, step := range []struct {
+		k      string
+		follow bool
+	}{{"j", true}, {"k", false}, {"G", true}, {"g", false}} {
+		before := m.followSeq
+		var cmd tea.Cmd
+		m, cmd = keyPress(m, step.k)
+		if got := cmd != nil && m.followSeq == before+1; got != step.follow {
+			t.Fatalf("%s: follow=%v, ждали %v", step.k, got, step.follow)
+		}
+	}
+}
+
+func TestBrowserURLFilteredNotify(t *testing.T) {
+	notify := []NotifyItem{{ID: "1", Title: "без задачи"}, {ID: "2", Title: "фид", TaskID: 9}}
+	m := viewModel(120, 36, nil, nil, notify, nil, nil)
+	m.api.Portal, m.api.My = "https://x.bitrix24.ru", 7
+	m.tab = tabNotify
+	m.filter = "фид"
+	if got := m.browserURL(); !strings.HasSuffix(got, "/task/view/9/") {
+		t.Fatalf("курсор на отфильтрованном уведе: %q", got)
 	}
 }

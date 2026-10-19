@@ -167,6 +167,8 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.tab == tabNotify {
 			return m, m.readAllCmd()
 		}
+	case key.Matches(msg, km.Browser):
+		return m.openBrowser()
 	case key.Matches(msg, km.Status):
 		if m.tab == tabTasks && m.taskOpen {
 			if !m.cardMatchesCursor() {
@@ -209,18 +211,22 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.visibleCount() > 0 && m.cursor < m.visibleCount()-1 {
 			m.cursor++
 		}
+		return m, m.followCard()
 	case key.Matches(msg, km.Up):
 		if m.cursor > 0 {
 			m.cursor--
 		}
+		return m, m.followCard()
 	case key.Matches(msg, km.Top):
 		m.cursor = 0
+		return m, m.followCard()
 	case key.Matches(msg, km.Bottom):
 		m.clampCursors()
 		m.cursor = m.visibleCount() - 1
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
+		return m, m.followCard()
 	case key.Matches(msg, km.Open):
 		return m.enterKey()
 	}

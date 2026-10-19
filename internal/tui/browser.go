@@ -10,7 +10,12 @@ import (
 
 // startOpener — точка подмены в тестах: реальный xdg-open оттуда не зовётся.
 var startOpener = func(url string) error {
-	return exec.Command("xdg-open", url).Start()
+	c := exec.Command("xdg-open", url)
+	if err := c.Start(); err != nil {
+		return err
+	}
+	go c.Wait() // xdg-open выходит сразу — не оставляем зомби
+	return nil
 }
 
 // browserMsg — итог попытки открыть URL (err == nil — открыто).
@@ -49,10 +54,11 @@ func (m Model) browserURL() string {
 		}
 		return rules.TaskURL(m.api.Portal, int(m.api.My), int(rows[m.cursor].task.ID))
 	default:
-		if m.cursor < 0 || m.cursor >= len(m.notify) {
+		vn := m.visibleNotify()
+		if m.cursor < 0 || m.cursor >= len(vn) {
 			return ""
 		}
-		if id := m.notify[m.cursor].TaskID; id > 0 {
+		if id := vn[m.cursor].TaskID; id > 0 {
 			return rules.TaskURL(m.api.Portal, int(m.api.My), int(id))
 		}
 		return ""
