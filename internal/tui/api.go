@@ -13,9 +13,10 @@ import (
 // im.dialog.read (отправка и открытие чата),
 // im.notify.get/read/read.all, tasks.task.list/get/update.
 type API struct {
-	C   *b24.Client
-	My  int64 // id себя, из config.webhook_user
-	Now func() time.Time
+	C      *b24.Client
+	My     int64  // id себя, из config.webhook_user
+	Portal string // адрес портала из config.portal (без хвостового «/»)
+	Now    func() time.Time
 
 	chatsAt   time.Time
 	tasksAt   time.Time
