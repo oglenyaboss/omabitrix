@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 )
 
@@ -12,9 +13,7 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// оверлеи перехватывают всё
 	switch m.overlay {
 	case ovHelp:
-		if msg.Code == tea.KeyEsc || msg.Code == tea.KeyEnter || msg.String() == "?" {
-			m.overlay = ovNone
-		}
+		m.overlay = ovNone // любая клавиша закрывает
 		return m, nil
 	case ovStatus:
 		switch msg.Code {
@@ -119,62 +118,56 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// глобальные
-	switch msg.String() {
-	case "q":
-		if m.active != nil {
+	switch {
+	case key.Matches(msg, km.Quit), key.Matches(msg, km.Back):
+		// назад по текущей вкладке: диалог → карточка; q в конце — выход
+		if m.tab == tabChats && m.active != nil {
 			m.closeDialog()
 			return m, nil
 		}
-		if m.taskOpen {
+		if m.tab == tabTasks && m.taskOpen {
 			m.taskOpen = false
 			m.cardReq = 0
 			return m, nil
 		}
-		return m, tea.Quit
-	case "esc":
-		if m.active != nil {
-			m.closeDialog()
-			return m, nil
+		if key.Matches(msg, km.Quit) {
+			return m, tea.Quit
 		}
-		if m.taskOpen {
-			m.taskOpen = false
-			m.cardReq = 0
-			return m, nil
-		}
-	case "ctrl+c":
+	case key.Matches(msg, km.ForceQuit):
 		return m, tea.Quit
-	case "1":
-		m.tab = tabChats
-		m.clampCursors()
+	case key.Matches(msg, km.Tab1):
+		m.switchTab(tabChats)
 		return m, nil
-	case "2":
-		m.tab = tabTasks
-		m.clampCursors()
+	case key.Matches(msg, km.Tab2):
+		m.switchTab(tabTasks)
 		return m, nil
-	case "3":
-		m.tab = tabNotify
-		m.clampCursors()
+	case key.Matches(msg, km.Tab3):
+		m.switchTab(tabNotify)
 		return m, nil
-	case "?":
+	case key.Matches(msg, km.NextTab):
+		m.switchTab((m.tab + 1) % tabCount)
+		return m, nil
+	case key.Matches(msg, km.PrevTab):
+		m.switchTab((m.tab + tabCount - 1) % tabCount)
+		return m, nil
+	case key.Matches(msg, km.Help):
 		m.overlay = ovHelp
 		return m, nil
-	case "R":
+	case key.Matches(msg, km.Refresh):
 		return m, m.reloadAllCmd()
-	case "r":
+	case key.Matches(msg, km.Reply):
 		if m.tab == tabChats && m.active != nil {
 			m.replyActive()
 			return m, m.reply.Focus()
 		}
-	case "/":
-		if m.tab == tabChats {
-			m.focus = focusFilter
-			return m, m.filterIn.Focus()
-		}
-	case "A":
+	case key.Matches(msg, km.Filter):
+		m.focus = focusFilter
+		return m, m.filterIn.Focus()
+	case key.Matches(msg, km.ReadAll):
 		if m.tab == tabNotify {
 			return m, m.readAllCmd()
 		}
-	case "s":
+	case key.Matches(msg, km.Status):
 		if m.tab == tabTasks && m.taskOpen {
 			if !m.cardMatchesCursor() {
 				m.flash = "карточка другой задачи — enter, чтобы открыть эту"
@@ -185,7 +178,7 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.statusIdx = 0
 			return m, nil
 		}
-	case "d":
+	case key.Matches(msg, km.Deadline):
 		if m.tab == tabTasks && m.taskOpen {
 			if !m.cardMatchesCursor() {
 				m.flash = "карточка другой задачи — enter, чтобы открыть эту"
@@ -196,7 +189,7 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.deadlineIdx = 0
 			return m, nil
 		}
-	case "c":
+	case key.Matches(msg, km.TaskChat):
 		if m.tab == tabTasks && m.taskOpen {
 			if m.taskCard.ChatID <= 0 {
 				m.flash = "у задачи нет чата"
@@ -205,43 +198,42 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			id := "chat" + fmt.Sprint(m.taskCard.ChatID)
 			m.openChatByDialog(id)
+			m.active.Title = m.taskCard.Title
 			return m, m.historyCmd(id, 0)
 		}
 	}
 
 	// навигация по спискам
-	switch msg.String() {
-	case "j", "down":
+	switch {
+	case key.Matches(msg, km.Down):
 		if m.visibleCount() > 0 && m.cursor < m.visibleCount()-1 {
 			m.cursor++
 		}
-	case "k", "up":
+	case key.Matches(msg, km.Up):
 		if m.cursor > 0 {
 			m.cursor--
 		}
-	case "g":
+	case key.Matches(msg, km.Top):
 		m.cursor = 0
-	case "G":
+	case key.Matches(msg, km.Bottom):
 		m.clampCursors()
 		m.cursor = m.visibleCount() - 1
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
-	case "enter":
+	case key.Matches(msg, km.Open):
 		return m.enterKey()
 	}
 
 	// скролл истории, если диалог открыт и нет фокуса ввода
 	if m.active != nil {
-		switch msg.String() {
-		case "pgdown", "f":
+		switch {
+		case key.Matches(msg, km.PageDown):
 			m.vp.PageDown()
-		case "pgup", "b":
+		case key.Matches(msg, km.PageUp):
 			m.vp.PageUp()
-		case "h":
-			// догрузка старых — позже: "H"
-		case "H":
-			if m.active != nil && !m.noMore && len(m.history) > 0 {
+		case key.Matches(msg, km.Older):
+			if !m.noMore && len(m.history) > 0 {
 				first := m.history[0].ID
 				return m, m.historyCmd(m.active.DialogID, first)
 			}
@@ -252,6 +244,15 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// switchTab — смена вкладки: фильтр вкладко-специфичен, сбрасываем;
+// курсор клампится под новый список.
+func (m *Model) switchTab(t tab) {
+	m.tab = t
+	m.filter = ""
+	m.filterIn.SetValue("")
+	m.clampCursors()
 }
 
 func (m Model) enterKey() (tea.Model, tea.Cmd) {

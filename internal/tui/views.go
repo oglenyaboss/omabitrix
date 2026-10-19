@@ -486,68 +486,15 @@ func (m Model) notifyRows(n NotifyItem, selected bool) []string {
 // ---- help
 
 func (m Model) viewHelp() string {
-	rows := []struct{ k, d string }{
-		{"j/k ↑↓", "навигация"},
-		{"1 2 3", "чаты / задачи / уведы"},
-		{"enter", "открыть"},
-		{"r", "ответить в чате"},
-		{"enter в ответе", "отправить"},
-		{"esc", "назад / отмена"},
-		{"s", "сменить статус задачи"},
-		{"d", "сдвинуть срок задачи"},
-		{"c", "чат задачи из карточки"},
-		{"enter на уведе", "открыть задачу"},
-		{"H", "догрузить историю"},
-		{"/", "поиск по чатам"},
-		{"A", "уведы: всё прочитано"},
-		{"R", "обновить всё"},
-		{"g / G", "в начало / в конец"},
-		{"b / f", "страница вверх/вниз"},
-		{"колесо мыши", "скролл / список"},
-		{"?", "эта справка"},
-		{"q", "выход (из диалога — назад)"},
-	}
-	out := make([]string, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, "  "+help(r.k, r.d))
-	}
+	h := m.help
+	h.SetWidth(m.width - 4) // узкий терминал: колонки обрежутся с «…»
 	return "\n" + stTitle.Render("  хоткеи") + "\n\n" +
-		strings.Join(out, "\n") + "\n\n" + stDim.Render("  любая клавиша — назад")
+		h.FullHelpView(m.fullHelp()) + "\n\n" + stDim.Render("  любая клавиша — назад")
 }
 
-// footer: контекстная справка + ошибки + флеш.
+// footer: контекстная справка (shortHelp) + ошибки + флеш.
 func (m Model) footer() string {
-	var left string
-	switch {
-	case m.active != nil && m.focus != focusReply:
-		left = strings.Join([]string{
-			help("r", "ответить"), help("H", "раньше"), help("b/f", "страница"),
-			help("esc", "к списку"),
-		}, " · ")
-	case m.focus == focusReply:
-		left = strings.Join([]string{
-			help("enter", "отправить"), help("esc", "отмена"),
-		}, " · ")
-	case m.tab == tabTasks && m.taskOpen:
-		hints := []string{help("s", "статус"), help("d", "срок")}
-		if m.taskCard.ChatID > 0 {
-			hints = append(hints, help("c", "чат задачи"))
-		}
-		hints = append(hints, help("q", "назад"))
-		left = strings.Join(hints, " · ")
-	case m.tab == tabTasks:
-		left = strings.Join([]string{
-			help("enter", "карточка"), help("R", "обновить"),
-		}, " · ")
-	case m.tab == tabNotify:
-		left = strings.Join([]string{
-			help("enter", "в задачу"), help("A", "всё прочитано"), help("R", "обновить"),
-		}, " · ")
-	default:
-		left = strings.Join([]string{
-			help("enter", "открыть"), help("/", "поиск"), help("?", "хоткеи"),
-		}, " · ")
-	}
+	left := m.help.ShortHelpView(m.shortHelp())
 	var right string
 	switch {
 	case m.loadErr != "":

@@ -454,3 +454,93 @@ func TestReplySendKeepsFocusAndTyped(t *testing.T) {
 		t.Fatal("успех без active дописал историю")
 	}
 }
+
+func TestHelpOverlayAnyKey(t *testing.T) {
+	m := viewModel(120, 36, nil, nil, nil, nil, nil)
+	m2, _ := keyPress(m, "?")
+	if m2.overlay != ovHelp {
+		t.Fatalf("? не открыл справку: %v", m2.overlay)
+	}
+	v := m2.View().Content
+	// полная карта: колонки всех групп, включая общий ctrl+c и shift+tab
+	for _, want := range []string{"shift+tab", "ctrl+c", "хоткеи", "всё прочитано"} {
+		if !strings.Contains(v, want) {
+			t.Fatalf("в полной карте нет %q:\n%s", want, v)
+		}
+	}
+	for i, line := range strings.Split(v, "\n") {
+		if lw := lipgloss.Width(line); lw > 120 {
+			t.Fatalf("строка справки %d шире 120: %d", i, lw)
+		}
+	}
+	// любая клавиша закрывает
+	m3, _ := keyPress(m2, "x")
+	if m3.overlay != ovNone {
+		t.Fatalf("x не закрыл справку: %v", m3.overlay)
+	}
+}
+
+func TestTabCycleKeys(t *testing.T) {
+	m := viewModel(120, 36, nil, nil, nil, nil, nil)
+	m.tab = tabChats
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	if got := mm.(Model).tab; got != tabTasks {
+		t.Fatalf("tab: вкладка %v, хочу задачи", got)
+	}
+	mm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	if got := mm.(Model).tab; got != tabNotify {
+		t.Fatalf("shift+tab: вкладка %v, хочу уведы", got)
+	}
+	// смена вкладки сбрасывает фильтр
+	m3 := viewModel(120, 36, []Chat{{DialogID: "d", Title: "x"}}, nil, nil, nil, nil)
+	m3.tab = tabChats
+	m3.filter = "x"
+	m3.filterIn.SetValue("x")
+	mm, _ = m3.Update(tea.KeyPressMsg{Code: '2', Text: "2"})
+	m4 := mm.(Model)
+	if m4.filter != "" || m4.filterIn.Value() != "" {
+		t.Fatalf("смена вкладки не сбросила фильтр: %q / %q", m4.filter, m4.filterIn.Value())
+	}
+}
+
+func TestBackFromCard(t *testing.T) {
+	m := viewModel(120, 36, nil, []Task{{ID: 1, Title: "x"}}, nil, nil, nil)
+	m.tab = tabTasks
+	m.taskOpen = true
+	m.taskCard = Task{ID: 1, Title: "x"}
+	m.cardReq = 1
+	m.active = &Chat{DialogID: "chat1"} // диалог остался с вкладки чатов
+	mm, cmd := m.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
+	m2 := mm.(Model)
+	if m2.taskOpen || m2.cardReq != 0 {
+		t.Fatalf("q не закрыл карточку: taskOpen=%v cardReq=%d", m2.taskOpen, m2.cardReq)
+	}
+	if m2.active == nil || m2.active.DialogID != "chat1" {
+		t.Fatalf("q тронул диалог: %+v", m2.active)
+	}
+	if cmd != nil {
+		t.Fatal("q с открытой карточкой не должен выходить из программы")
+	}
+}
+
+func TestFooterTaskCardHints(t *testing.T) {
+	m := viewModel(120, 36, nil, []Task{{ID: 1, Title: "x"}}, nil, nil, nil)
+	m.tab = tabTasks
+	m.taskOpen = true
+	m.taskCard = Task{ID: 1, Title: "x", ChatID: 7}
+	f := m.footer()
+	for _, want := range []string{"статус", "срок"} {
+		if !strings.Contains(f, want) {
+			t.Fatalf("футер карточки без %q:\n%s", want, f)
+		}
+	}
+}
+
+func TestFilterAnyTab(t *testing.T) {
+	m := viewModel(120, 36, nil, []Task{{ID: 1, Title: "x"}}, nil, nil, nil)
+	m.tab = tabTasks
+	m2, _ := keyPress(m, "/")
+	if m2.focus != focusFilter {
+		t.Fatalf("/ не включил фильтр на задачах: %v", m2.focus)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	bhelp "charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/textinput"
@@ -58,6 +59,7 @@ type Model struct {
 	filter   string
 	filterIn textinput.Model
 	focus    focus
+	help     bhelp.Model
 
 	active         *Chat
 	history        []Message
@@ -107,9 +109,21 @@ func NewModel(api *API, ctx context.Context) Model {
 	ti := textinput.New()
 	ti.Placeholder = "фильтр чатов…"
 	ti.CharLimit = 60
+	h := bhelp.New()
+	h.ShortSeparator = " · "
+	h.FullSeparator = "  "
+	h.Styles = bhelp.Styles{
+		ShortKey:       stHelpKey,
+		ShortDesc:      stHelpDesc,
+		ShortSeparator: stDim,
+		FullKey:        stHelpKey,
+		FullDesc:       stHelpDesc,
+		FullSeparator:  stDim,
+		Ellipsis:       stDim,
+	}
 	return Model{
 		api: api, ctx: ctx,
-		spinner: sp, reply: ta, filterIn: ti,
+		spinner: sp, reply: ta, filterIn: ti, help: h,
 		drafts: map[string]string{},
 	}
 }
