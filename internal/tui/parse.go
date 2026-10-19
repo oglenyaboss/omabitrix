@@ -372,6 +372,34 @@ type rawTask struct {
 	} `json:"creator"`
 }
 
+// StagesFrom — task.stages.get: объект по id (или [] у пустого канбана)
+// → список по SORT.
+func StagesFrom(raw []byte) []Stage {
+	var res map[string]struct {
+		ID    FlexInt    `json:"ID"`
+		Title string     `json:"TITLE"`
+		Sort  FlexInt    `json:"SORT"`
+		Color FlexString `json:"COLOR"`
+	}
+	if json.Unmarshal(raw, &res) != nil {
+		return nil
+	}
+	type sorted struct {
+		st   Stage
+		sort int64
+	}
+	all := make([]sorted, 0, len(res))
+	for _, v := range res {
+		all = append(all, sorted{Stage{ID: int64(v.ID), Title: v.Title, Color: string(v.Color)}, int64(v.Sort)})
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].sort < all[j].sort })
+	out := make([]Stage, len(all))
+	for i, s := range all {
+		out[i] = s.st
+	}
+	return out
+}
+
 // TaskFrom — tasks.task.get → карточка.
 func TaskFrom(raw []byte) Task {
 	var res struct {

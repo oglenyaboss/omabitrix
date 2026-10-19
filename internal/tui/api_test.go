@@ -349,3 +349,105 @@ func TestSearchMessagesAPI(t *testing.T) {
 		t.Error("меньше 3 символов должен быть ошибкой")
 	}
 }
+
+// Стадии и проекты — второй batch по группам задач: стадия 0 портала — первая
+// по SORT, имя проекта из sonet_group.get; повторно мета не запрашивается.
+func TestOpenTasksStages(t *testing.T) {
+	var mu sync.Mutex
+	var metaCalls int
+	var metaCmds map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			CMD map[string]string `json:"cmd"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		var res map[string]any
+		if _, ok := body.CMD["do"]; ok {
+			res = map[string]any{
+				"do": map[string]any{"tasks": []any{
+					map[string]any{"id": 1, "title": "a", "status": "2", "groupId": "13", "stageId": "83"},
+					map[string]any{"id": 2, "title": "b", "status": "2", "groupId": "13", "stageId": "0"},
+					map[string]any{"id": 3, "title": "c", "status": "2", "groupId": "0", "stageId": "0"},
+				}},
+				"help": map[string]any{"tasks": []any{}}, "watch": map[string]any{"tasks": []any{}},
+			}
+		} else {
+			mu.Lock()
+			metaCalls++
+			metaCmds = body.CMD
+			mu.Unlock()
+			res = map[string]any{
+				"st13": map[string]any{
+					"83": map[string]any{"ID": "83", "TITLE": "DOING", "SORT": "300", "COLOR": "75d900"},
+					"79": map[string]any{"ID": "79", "TITLE": "INBOX", "SORT": "100", "COLOR": "00c4fb"},
+					"81": map[string]any{"ID": "81", "TITLE": "TODO", "SORT": "200", "COLOR": "47d1e2"},
+				},
+				"g13": []any{map[string]any{"ID": "13", "NAME": "DEV. Портал"}},
+			}
+		}
+		b, _ := json.Marshal(map[string]any{"result": res, "result_error": []any{}})
+		fmt.Fprintf(w, `{"result":%s}`, b)
+	}))
+	defer srv.Close()
+
+	a := &API{C: b24.New(srv.URL), My: 75}
+	tasks, err := a.OpenTasks(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[int64]Task{}
+	for _, t := range tasks {
+		byID[t.ID] = t
+	}
+	if got := byID[1]; got.Stage != "DOING" || got.StageID != 83 || got.StageColor != "75d900" || got.StageSort != 2 || got.Project != "DEV. Портал" || got.GroupID != 13 {
+		t.Errorf("задача 1: %+v", got)
+	}
+	if got := byID[2]; got.Stage != "INBOX" || got.StageID != 79 || got.StageSort != 0 {
+		t.Errorf("стадия 0 → первая по SORT: %+v", got)
+	}
+	if got := byID[3]; got.Stage != "" || got.Project != "" {
+		t.Errorf("без проекта — без стадии: %+v", got)
+	}
+	if st := a.StagesOf(13); len(st) != 3 || st[0].Title != "INBOX" || st[2].Title != "DOING" {
+		t.Errorf("StagesOf(13): %+v", st)
+	}
+	mu.Lock()
+	if q := metaCmds["st13"]; !strings.HasPrefix(q, "task.stages.get?") || !strings.Contains(q, "entityId=13") {
+		t.Errorf("st13: %q", q)
+	}
+	mu.Unlock()
+	if _, err := a.OpenTasks(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if metaCalls != 1 {
+		t.Errorf("мета запрошена %d раз, хочу 1 (кэш)", metaCalls)
+	}
+}
+
+func TestMoveStageAPI(t *testing.T) {
+	var got url.Values
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		got = url.Values{}
+		for k, v := range body {
+			got.Set(k, fmt.Sprint(v))
+		}
+		fmt.Fprint(w, `{"result":true}`)
+	}))
+	defer srv.Close()
+	a := &API{C: b24.New(srv.URL), tasksAt: time.Now()}
+	if err := a.MoveStage(context.Background(), 14999, 85); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(path, "/task.stages.movetask.json") || got.Get("id") != "14999" || got.Get("stageId") != "85" {
+		t.Errorf("запрос: %s %v", path, got)
+	}
+	if !a.tasksAt.IsZero() {
+		t.Error("кэш задач не сброшен")
+	}
+}

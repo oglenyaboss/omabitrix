@@ -226,12 +226,15 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, km.ForceQuit):
 		return m, tea.Quit
 	case key.Matches(msg, km.Tab1):
-		m.switchTab(tabChats)
+		m.switchTab(tabHome)
 		return m, nil
 	case key.Matches(msg, km.Tab2):
 		m.switchTab(tabTasks)
 		return m, nil
 	case key.Matches(msg, km.Tab3):
+		m.switchTab(tabChats)
+		return m, nil
+	case key.Matches(msg, km.Tab4):
 		m.switchTab(tabNotify)
 		return m, nil
 	case key.Matches(msg, km.NextTab):

@@ -53,4 +53,17 @@ type Task struct {
 	ChatID      int64
 	Role        string // «делаю»/«помогаю»/«наблюдаю»: do | help | watch
 	NewComments int    // бейдж новых комментариев (newCommentsCount)
+	GroupID     int64  // проект (рабочая группа); 0 — без проекта
+	Project     string // имя проекта (sonet_group.get)
+	StageID     int64  // стадия канбана проекта; 0 портала уже разрешён в первую
+	Stage       string // имя стадии: INBOX/TODO/… — ключ колонки доски
+	StageColor  string // hex без «#», как отдаёт портал
+	StageSort   int    // позиция стадии в канбане проекта (0 — первая)
+}
+
+// Stage — стадия канбана проекта (task.stages.get), по порядку SORT.
+type Stage struct {
+	ID    int64
+	Title string
+	Color string // hex без «#»
 }

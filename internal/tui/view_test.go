@@ -22,6 +22,7 @@ func viewModel(w, h int, chats []Chat, tasks []Task, notify []NotifyItem, active
 	m := NewModel(&API{}, nil)
 	m.width, m.height = w, h
 	m.ready = true
+	m.tab = tabChats // тесты писались под старт на чатах; пульт — свои тесты
 	m.chats = chats
 	m.tasks = tasks
 	m.notify = notify
@@ -245,20 +246,20 @@ func TestMouseClickGeometry(t *testing.T) {
 	m := viewModel(120, 36, chats, nil, nil, nil, nil)
 	m.tab = tabChats
 
-	// строка 0 — верхняя грань рамки, 1-2 — первый чат, 3-4 — второй
-	mm, _ := m.Update(tea.MouseClickMsg{X: 10, Y: 1, Button: tea.MouseLeft})
+	// строка 0 — вкладки, 1 — верхняя грань рамки, 2-3 — первый чат, 4-5 — второй
+	mm, _ := m.Update(tea.MouseClickMsg{X: 10, Y: 2, Button: tea.MouseLeft})
 	m1 := mm.(Model)
 	if m1.cursor != 0 || m1.active == nil || m1.active.DialogID != "d0" {
 		t.Fatalf("клик по строке 1: cursor=%d active=%v", m1.cursor, m1.active)
 	}
 	// второй чат при открытом диалоге — переключение по клику
-	m2, _ := m1.Update(tea.MouseClickMsg{X: 10, Y: 3, Button: tea.MouseLeft})
+	m2, _ := m1.Update(tea.MouseClickMsg{X: 10, Y: 4, Button: tea.MouseLeft})
 	m3 := m2.(Model)
 	if m3.active == nil || m3.active.DialogID != "d1" {
 		t.Fatalf("клик по строке 3 не переключил диалог: %+v", m3.active)
 	}
 	// вторая строка чата (превью) — тот же чат
-	m4, _ := m3.Update(tea.MouseClickMsg{X: 10, Y: 4, Button: tea.MouseLeft})
+	m4, _ := m3.Update(tea.MouseClickMsg{X: 10, Y: 5, Button: tea.MouseLeft})
 	if got := m4.(Model).active.DialogID; got != "d1" {
 		t.Fatalf("клик по превью открыл %s, хочу d1", got)
 	}
@@ -275,9 +276,9 @@ func TestMouseClickGeometry(t *testing.T) {
 	if len(vc) != 8 {
 		t.Fatalf("фильтр «чат» должен пропускать все: %d", len(vc))
 	}
-	m7, _ := m6.Update(tea.MouseClickMsg{X: 10, Y: 5, Button: tea.MouseLeft})
+	m7, _ := m6.Update(tea.MouseClickMsg{X: 10, Y: 6, Button: tea.MouseLeft})
 	if got := m7.(Model).active.DialogID; got != "d1" {
-		t.Fatalf("клик с фильтром (Y=5 → второй чат): открылся %s", got)
+		t.Fatalf("клик с фильтром (Y=6 → второй чат): открылся %s", got)
 	}
 }
 
@@ -360,9 +361,9 @@ func TestMouseClickCardGateAndTabClamp(t *testing.T) {
 	if got := mm.(Model).cursor; got != 0 {
 		t.Fatalf("клик по карточке сдвинул курсор на %d", got)
 	}
-	// клик по списку слева — выбирает (строка 4 = первая строка задачи 1:
-	// 0 — секция, 1-2 — задача 0, 3-4 — задача 1)
-	mm, _ = mm.(Model).Update(tea.MouseClickMsg{X: 5, Y: 4, Button: tea.MouseLeft})
+	// клик по списку слева — выбирает (строка 5 = первая строка задачи 1:
+	// 0 — вкладки, 1 — грань, 2 — секция, 3-4 — задача 0, 5-6 — задача 1)
+	mm, _ = mm.(Model).Update(tea.MouseClickMsg{X: 5, Y: 5, Button: tea.MouseLeft})
 	if got := mm.(Model).cursor; got != 1 {
 		t.Fatalf("клик по списку: cursor=%d, хочу 1", got)
 	}
@@ -490,12 +491,12 @@ func TestTabCycleKeys(t *testing.T) {
 	m := viewModel(120, 36, nil, nil, nil, nil, nil)
 	m.tab = tabChats
 	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-	if got := mm.(Model).tab; got != tabTasks {
-		t.Fatalf("tab: вкладка %v, хочу задачи", got)
+	if got := mm.(Model).tab; got != tabNotify {
+		t.Fatalf("tab: вкладка %v, хочу уведы", got)
 	}
 	mm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-	if got := mm.(Model).tab; got != tabNotify {
-		t.Fatalf("shift+tab: вкладка %v, хочу уведы", got)
+	if got := mm.(Model).tab; got != tabTasks {
+		t.Fatalf("shift+tab: вкладка %v, хочу задачи", got)
 	}
 	// смена вкладки сбрасывает фильтр
 	m3 := viewModel(120, 36, []Chat{{DialogID: "d", Title: "x"}}, nil, nil, nil, nil)

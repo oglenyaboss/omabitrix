@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +27,9 @@ type API struct {
 	allChats  []Chat // полный список, включая чаты задач
 	allTasks  []Task
 	allNotify []NotifyItem
+
+	stages   map[int64][]Stage // канбан проекта по SORT; кэш на сессию
+	projects map[int64]string  // имя проекта по id группы
 }
 
 // Chats — список чатов; чаты задач отфильтрованы в Tasks. TTL 20s.
@@ -208,7 +212,7 @@ func (a *API) OpenTasks(ctx context.Context, force bool) ([]Task, error) {
 	if !force && time.Since(a.tasksAt) < 20*time.Second && a.allTasks != nil {
 		return a.allTasks, nil
 	}
-	sel := []string{"ID,TITLE,STATUS,DEADLINE,CREATED_BY,CHAT_ID,NEW_COMMENTS_COUNT"}
+	sel := []string{"ID,TITLE,STATUS,DEADLINE,CREATED_BY,CHAT_ID,NEW_COMMENTS_COUNT,GROUP_ID,STAGE_ID"}
 	order := map[string]string{"DEADLINE": "asc"}
 	taskCmd := func(field string) b24.Cmd {
 		return b24.Cmd{Method: "tasks.task.list", Params: map[string]any{
@@ -252,11 +256,99 @@ func (a *API) OpenTasks(ctx context.Context, force bool) ([]Task, error) {
 				ID: id, Title: t.Title, Status: string(t.Status),
 				Deadline: t.Deadline, ChatID: int64(t.ChatID),
 				Role: role, NewComments: int(t.NewComments),
+				GroupID: int64(t.GroupID), StageID: int64(t.StageID),
 			})
 		}
 	}
+	a.loadMeta(ctx)
+	for i := range a.allTasks {
+		a.annotate(&a.allTasks[i])
+	}
 	a.tasksAt = a.now()
 	return a.allTasks, nil
+}
+
+// loadMeta — стадии и имена проектов для групп, которых ещё нет в кэше:
+// один batch, по две команды на группу. Ошибка не роняет список задач —
+// доска покажет их без стадии, мета перезапросится при следующей загрузке.
+func (a *API) loadMeta(ctx context.Context) {
+	cmds := map[string]b24.Cmd{}
+	for _, t := range a.allTasks {
+		gid := t.GroupID
+		if gid <= 0 {
+			continue
+		}
+		if _, ok := a.stages[gid]; ok {
+			continue
+		}
+		// ponytail: batch держит 50 команд — до 25 новых проектов за раз,
+		// остальные догрузятся следующим вызовом
+		if len(cmds) >= 50 {
+			break
+		}
+		key := strconv.FormatInt(gid, 10)
+		cmds["st"+key] = b24.Cmd{Method: "task.stages.get", Params: map[string]any{"entityId": gid}}
+		cmds["g"+key] = b24.Cmd{Method: "sonet_group.get", Params: map[string]any{"FILTER": map[string]any{"ID": gid}}}
+	}
+	if len(cmds) == 0 {
+		return
+	}
+	res, _, err := a.C.Batch(ctx, cmds)
+	if err != nil {
+		return
+	}
+	if a.stages == nil {
+		a.stages = map[int64][]Stage{}
+		a.projects = map[int64]string{}
+	}
+	for k, raw := range res {
+		gid, err := strconv.ParseInt(strings.TrimLeft(k, "stg"), 10, 64)
+		if err != nil {
+			continue
+		}
+		if strings.HasPrefix(k, "st") {
+			a.stages[gid] = StagesFrom(raw)
+			continue
+		}
+		var groups []struct {
+			Name string `json:"NAME"`
+		}
+		if json.Unmarshal(raw, &groups) == nil && len(groups) > 0 {
+			a.projects[gid] = groups[0].Name
+		}
+	}
+}
+
+// annotate — проект и стадия задачи из кэша; стадия 0 у портала значит
+// первую стадию канбана проекта.
+func (a *API) annotate(t *Task) {
+	t.Project = a.projects[t.GroupID]
+	st := a.stages[t.GroupID]
+	if len(st) == 0 {
+		return
+	}
+	idx := 0
+	for i, s := range st {
+		if s.ID == t.StageID {
+			idx = i
+			break
+		}
+	}
+	t.StageID, t.Stage, t.StageColor, t.StageSort = st[idx].ID, st[idx].Title, st[idx].Color, idx
+}
+
+// StagesOf — канбан проекта по порядку (для переноса карточки в соседнюю стадию).
+func (a *API) StagesOf(groupID int64) []Stage { return a.stages[groupID] }
+
+// MoveStage — перенос задачи в стадию её проекта.
+func (a *API) MoveStage(ctx context.Context, taskID, stageID int64) error {
+	err := a.C.Call(ctx, "task.stages.movetask", map[string]any{
+		"id": taskID, "stageId": stageID,
+	}, nil)
+	if err == nil {
+		a.tasksAt = time.Time{}
+	}
+	return err
 }
 
 // taskListPage — страница tasks.task.list; результат команды batch той же формы.
@@ -268,6 +360,8 @@ type taskListPage struct {
 		Deadline    string     `json:"deadline"`
 		ChatID      FlexInt    `json:"chatId"`
 		NewComments FlexInt    `json:"newCommentsCount"`
+		GroupID     FlexInt    `json:"groupId"`
+		StageID     FlexInt    `json:"stageId"`
 	} `json:"tasks"`
 }
 

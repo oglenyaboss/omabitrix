@@ -20,8 +20,9 @@ import (
 type tab int
 
 const (
-	tabChats tab = iota
+	tabHome tab = iota
 	tabTasks
+	tabChats
 	tabNotify
 	tabCount
 )
@@ -101,6 +102,7 @@ type Model struct {
 	listW, dialW, cardW, bodyH int
 
 	width, height int
+	frame         int // кадр анимаций (animTick): пульс сроков, мигание часов
 	spinner       spinner.Model
 	ready         bool
 	flash         string
@@ -131,10 +133,10 @@ func NewModel(api *API, ctx context.Context) Model {
 	si.Placeholder = "поиск по истории…"
 	si.CharLimit = 100
 	h := help.New()
-	h.ShortSeparator = " · "
+	h.ShortSeparator = "  "
 	h.FullSeparator = "  "
 	h.Styles = help.Styles{
-		ShortKey:       stHelpKey,
+		ShortKey:       stKey,
 		ShortDesc:      stHelpDesc,
 		ShortSeparator: stDim,
 		FullKey:        stHelpKey,
@@ -150,7 +152,16 @@ func NewModel(api *API, ctx context.Context) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, m.reloadAllCmd(), tick10s())
+	return tea.Batch(m.spinner.Tick, m.reloadAllCmd(), tick10s(), animTick())
+}
+
+type frameMsg struct{}
+
+// animTick — кадр анимаций, 150 мс: цикл пульса 16 кадров ≈ 2.4 с.
+// ponytail: тикает всегда; при простое можно останавливать, когда в кадре
+// нечему двигаться.
+func animTick() tea.Cmd {
+	return tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg { return frameMsg{} })
 }
 
 func tick10s() tea.Cmd {
@@ -211,6 +222,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.refreshActiveCmd(), m.reloadAllCmd(), tick10s())
 		}
 		return m, tea.Batch(m.reloadAllCmd(), tick10s())
+
+	case frameMsg:
+		m.frame++
+		return m, animTick()
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -529,7 +544,7 @@ func (m *Model) layout() {
 	if m.cardW < 20 {
 		m.cardW = 20
 	}
-	m.bodyH = m.height - 1
+	m.bodyH = m.height - 2 // строка вкладок + футер
 	if m.bodyH < 6 {
 		m.bodyH = 6
 	}
@@ -575,6 +590,8 @@ func (m *Model) clampCursors() {
 // пересортировке (непрочитанные вверх), ключ переживает перечитку.
 func (m Model) cursorKey() string {
 	switch m.tab {
+	case tabHome:
+		return ""
 	case tabChats:
 		vc := m.visibleChats()
 		if m.cursor < 0 || m.cursor >= len(vc) {
@@ -886,7 +903,7 @@ func (m Model) mouseLeft(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		}
 		vc := m.visibleChats()
 		start, _, filterRows := m.chatWindow(vc)
-		idx := (msg.Y - 1 - filterRows) / 2 // строка 0 — верхняя грань рамки
+		idx := (msg.Y - 2 - filterRows) / 2 // строка 0 — вкладки, 1 — верхняя грань рамки
 		if idx < 0 || start+idx >= len(vc) {
 			return m, nil
 		}
@@ -904,7 +921,7 @@ func (m Model) mouseLeft(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		}
 		rows := m.flatTasks()
 		_, _, lineMap := m.taskWindow(rows)
-		idx := msg.Y - 1 - m.filterRows()
+		idx := msg.Y - 2 - m.filterRows()
 		if idx < 0 || idx >= len(lineMap) || lineMap[idx] < 0 {
 			return m, nil
 		}
@@ -913,7 +930,7 @@ func (m Model) mouseLeft(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 	case tabNotify:
 		vn := m.visibleNotify()
 		start, _ := m.notifyWindow(len(vn))
-		idx := (msg.Y - 1 - m.filterRows()) / 2
+		idx := (msg.Y - 2 - m.filterRows()) / 2
 		if idx < 0 || start+idx >= len(vn) {
 			return m, nil
 		}
@@ -942,6 +959,8 @@ func (m *Model) visibleChats() []Chat {
 
 func (m *Model) visibleCount() int {
 	switch m.tab {
+	case tabHome:
+		return 0
 	case tabChats:
 		return len(m.visibleChats())
 	case tabTasks:

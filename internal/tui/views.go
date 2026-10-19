@@ -20,13 +20,16 @@ func (m Model) View() tea.View {
 	} else if m.overlay == ovHelp {
 		s = m.viewHelp()
 	} else {
+		s = m.tabBar() + "\n"
 		switch m.tab {
+		case tabHome:
+			s += m.viewHome()
 		case tabChats:
-			s = m.viewChats()
+			s += m.viewChats()
 		case tabTasks:
-			s = m.viewTasks()
+			s += m.viewTasks()
 		case tabNotify:
-			s = m.viewNotify()
+			s += m.viewNotify()
 		}
 		s += "\n" + m.footer()
 	}
@@ -36,9 +39,71 @@ func (m Model) View() tea.View {
 	return v
 }
 
-// Навигация как в tele: вкладок-строки нет, номер и имя панели врезаны
-// в верхнюю грань рамки, активная панель — акцентной рамкой.
-// Хоткеи 1/2/3 читаются прямо из титула.
+// tabBar — строка вкладок: активная — акцентной плашкой с хоткеем,
+// у остальных счётчики; справа дата/время и связь с порталом.
+func (m Model) tabBar() string {
+	left := stAccent.Bold(true).Render("◆ ") + stTitle.Render("omabitrix") + "   "
+	tabs := []struct {
+		t    tab
+		name string
+		n    int
+	}{
+		{tabHome, "пульт", 0},
+		{tabTasks, "задачи", m.myOpenCount()},
+		{tabChats, "чаты", m.unreadChats()},
+		{tabNotify, "уведы", countUnread(m.notify)},
+	}
+	for i, t := range tabs {
+		if t.t == m.tab {
+			label := fmt.Sprintf("%d %s", i+1, t.name)
+			if t.n > 0 {
+				label += " " + fmt.Sprint(t.n)
+			}
+			left += pill(label, cInk, cAccent) + " "
+			continue
+		}
+		left += " " + stDim.Render(fmt.Sprint(i+1)) + " " + t.name
+		if t.n > 0 {
+			left += " " + stBadge.Render(fmt.Sprint(t.n))
+		}
+		left += "  "
+	}
+	dot := stAccent.Render("●")
+	if m.loadErr != "" {
+		dot = stUrgent.Render("●")
+	}
+	right := stDim.Render(clockLabel(m.api.now())) + "  " + dot + stDim.Render(" портал")
+	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 1
+	if gap < 1 {
+		return truncate(left, m.width)
+	}
+	return left + strings.Repeat(" ", gap) + right
+}
+
+// myOpenCount — открытые задачи, где я исполнитель (счётчик вкладки).
+func (m Model) myOpenCount() int {
+	n := 0
+	for _, t := range m.tasks {
+		if t.Role == "do" {
+			n++
+		}
+	}
+	return n
+}
+
+// unreadChats — чаты с непрочитанным (счётчик вкладки).
+func (m Model) unreadChats() int {
+	n := 0
+	for _, c := range m.chats {
+		if c.Counter > 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// Номер панели больше не врезан в рамку — он в строке вкладок;
+// активная панель — акцентной рамкой.
 
 func paneTitle(num, name string, extra string, active bool) string {
 	idx := ""
@@ -88,7 +153,7 @@ func (m Model) chatListPane() string {
 		rows = append(rows, m.chatRows(vc[i], i == m.cursor)...)
 	}
 	active := m.focus != focusReply
-	title := paneTitle("1", "чаты", unreadExtra(m.unreadTotal()), active)
+	title := paneTitle("", "чаты", unreadExtra(m.unreadTotal()), active)
 	return box(title, rows, m.listW, active)
 }
 
@@ -336,7 +401,7 @@ func (m Model) taskListPane() string {
 	if len(rows) == 0 {
 		out = append(out, stDim.Render(" — открытых задач нет — "))
 	}
-	title := paneTitle("2", "задачи", unreadExtra(len(m.buckets.Overdue)), m.tab == tabTasks)
+	title := paneTitle("", "задачи", unreadExtra(len(m.buckets.Overdue)), m.tab == tabTasks)
 	return box(title, out, m.taskListW(), m.tab == tabTasks)
 }
 
@@ -572,7 +637,7 @@ func (m Model) viewNotify() string {
 	for i := start; i < end; i++ {
 		out = append(out, m.notifyRows(rows[i], i == m.cursor)...)
 	}
-	title := paneTitle("3", "уведы", unreadExtra(countUnread(m.notify)), m.tab == tabNotify)
+	title := paneTitle("", "уведы", unreadExtra(countUnread(m.notify)), m.tab == tabNotify)
 	return box(title, out, m.width-4, m.tab == tabNotify)
 }
 func countUnread(rows []NotifyItem) int {

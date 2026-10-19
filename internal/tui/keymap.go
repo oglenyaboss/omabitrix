@@ -16,6 +16,7 @@ type keyMap struct {
 	Tab1       key.Binding // 1
 	Tab2       key.Binding // 2
 	Tab3       key.Binding // 3
+	Tab4       key.Binding // 4
 	NextTab    key.Binding // tab
 	PrevTab    key.Binding // shift+tab
 	Help       key.Binding // ?
@@ -77,7 +78,7 @@ var km = keyMap{
 	),
 	Tab1: key.NewBinding(
 		key.WithKeys("1"),
-		key.WithHelp("1", "чаты"),
+		key.WithHelp("1", "пульт"),
 	),
 	Tab2: key.NewBinding(
 		key.WithKeys("2"),
@@ -85,7 +86,11 @@ var km = keyMap{
 	),
 	Tab3: key.NewBinding(
 		key.WithKeys("3"),
-		key.WithHelp("3", "уведы"),
+		key.WithHelp("3", "чаты"),
+	),
+	Tab4: key.NewBinding(
+		key.WithKeys("4"),
+		key.WithHelp("4", "уведы"),
 	),
 	NextTab: key.NewBinding(
 		key.WithKeys("tab"),
@@ -206,6 +211,8 @@ func (m Model) shortHelp() []key.Binding {
 		return []key.Binding{km.Open, km.Refresh, km.Help}
 	case m.tab == tabNotify:
 		return []key.Binding{km.Open, km.ReadAll, km.Refresh, km.Help}
+	case m.tab == tabHome:
+		return []key.Binding{km.Tab2, km.Tab3, km.Tab4, km.Refresh, km.Help}
 	default:
 		return []key.Binding{km.Open, km.Filter, km.Help}
 	}
@@ -217,7 +224,7 @@ func (m Model) fullHelp() [][]key.Binding {
 		// навигация
 		{km.Up, km.Down, km.Top, km.Bottom, km.Open, km.PageUp, km.PageDown},
 		// вкладки
-		{km.Tab1, km.Tab2, km.Tab3, km.NextTab, km.PrevTab},
+		{km.Tab1, km.Tab2, km.Tab3, km.Tab4, km.NextTab, km.PrevTab},
 		// чаты (r — ответить, на выделенном — с цитатой)
 		{km.Select, km.ReplyQuote, km.Edit, km.Delete, km.Like, km.Mention, km.Send, km.Cancel, km.Older, km.Search},
 		// задачи
