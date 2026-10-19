@@ -1286,3 +1286,41 @@ func TestSelectSurvivesHistoryMsg(t *testing.T) {
 		t.Fatalf("слияние истории: %+v", m5.history)
 	}
 }
+
+// Правка с упоминанием: в истории — «@Имя», на сервер — BB-код.
+func TestSelectEditMentionLocalText(t *testing.T) {
+	m := selFixture()
+	m.mentions["Анна"] = 42
+	m.editID = 4
+	m.replyActive()
+	m.reply.SetValue("@Анна ок")
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if got := mm.(Model).history[3].Text; got != "@Анна ок" {
+		t.Fatalf("локальный текст правки: %q", got)
+	}
+}
+
+// Ответ лайка не снимает флаг идущей отправки.
+func TestActionKeepsSending(t *testing.T) {
+	m := selFixture()
+	m.sending = true
+	mm, _ := m.Update(actionMsg{what: "лайк", id: 1})
+	if !mm.(Model).sending {
+		t.Fatal("лайк сбросил sending идущей отправки")
+	}
+}
+
+// Отправленное с упоминанием: в истории и в поле при ошибке — «@Имя», не BB-код.
+func TestSentMentionReadable(t *testing.T) {
+	m := selFixture()
+	m.sending = true
+	mm, _ := m.Update(sentMsg{dialogID: "chat7", id: 9, text: "[USER=42]Анна[/USER] ок"})
+	h := mm.(Model).history
+	if got := h[len(h)-1].Text; got != "@Анна ок" {
+		t.Fatalf("в истории: %q", got)
+	}
+	mm, _ = m.Update(sentMsg{dialogID: "chat7", text: "[USER=42]Анна[/USER] ок", err: errors.New("x")})
+	if got := mm.(Model).reply.Value(); got != "@Анна ок" {
+		t.Fatalf("в поле после ошибки: %q", got)
+	}
+}

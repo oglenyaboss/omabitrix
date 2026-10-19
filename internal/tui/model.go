@@ -342,6 +342,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sentMsg:
 		m.sending = false
+		// BB-коды упоминаний → «@Имя»: и в истории, и в поле при ошибке
+		msg.text, _ = applyMentions(msg.text, m.api.My)
 		m.replyTo = Message{} // цитата ушла вместе с сообщением (или чат сменился);
 		// при ошибке ответ на цитату не восстанавливаем — текст вернулся в поле
 		same := m.active != nil && m.active.DialogID == msg.dialogID
@@ -410,7 +412,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.loadCmd("tasks")
 
 	case actionMsg:
-		m.sending = false
+		if msg.what == "правка" {
+			m.sending = false // флаг ставит только отправка правки
+		}
 		if msg.err != nil {
 			m.loadErr = msg.what + ": " + msg.err.Error()
 			return m, m.refreshActiveCmd()

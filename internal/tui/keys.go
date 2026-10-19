@@ -103,17 +103,17 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			// фокус остаётся — допечатанное переживёт ответ
 			text := strings.TrimSpace(m.reply.Value())
 			if text != "" && m.active != nil && !m.sending {
-				text = m.expandMentions(text)
+				wire := m.expandMentions(text)
 				m.reply.Reset()
 				m.sending = true
 				if m.editID > 0 {
-					// правка: текст уже заменили в истории, ждём ответ сервера
+					// правка: в истории — читаемый текст, на сервер — с BB-кодами
 					id := m.editID
 					m.editID = 0
 					m.applyEdit(id, text)
-					return m, m.updateCmd(id, text)
+					return m, m.updateCmd(id, wire)
 				}
-				return m, m.sendCmd(text, m.replyTo.ID)
+				return m, m.sendCmd(wire, m.replyTo.ID)
 			}
 		}
 		return m, cmd
