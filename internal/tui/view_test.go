@@ -1011,8 +1011,8 @@ func TestSelectEditOwnOnly(t *testing.T) {
 		t.Fatalf("e на своём: editID=%d value=%q focus=%v",
 			m6.editID, m6.reply.Value(), m6.focus)
 	}
-	if v := ansi.Strip(m6.View().Content); !strings.Contains(v, "✎ редактирование") {
-		t.Fatalf("строки правки нет в кадре:\n%s", v)
+	if v := ansi.Strip(m6.View().Content); !strings.Contains(v, "── правка") {
+		t.Fatalf("разделителя правки нет в кадре:\n%s", v)
 	}
 	// esc при правке: поле чистое, черновик не сохранять
 	m7, _ := keyPress(m6, "esc")
