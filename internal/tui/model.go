@@ -88,16 +88,17 @@ type Model struct {
 	mentions map[string]int64 // имена, вставленные по «@»: имя → id автора
 	msgLine  map[int64]int    // стартовая строка сообщения в рендере истории
 
-	taskIdx     int    // выбранная задача в плоском списке
-	taskRole    string // роль доски: do | help | watch (пусто — do)
-	taskProject int64  // фильтр доски по проекту; 0 — все
-	taskCard    Task
-	taskOpen    bool
-	cardReq     int64 // последний запрошенный id — защита от гонки ответов
-	cardLoading bool  // карточка ещё грузится — в панели «загрузка…»
-	followSeq   int   // тик «карточка за курсором»: живёт только последний
-	statusIdx   int
-	deadlineIdx int
+	taskIdx       int    // выбранная задача в плоском списке
+	taskRole      string // роль доски: do | help | watch (пусто — do)
+	taskProject   int64  // фильтр доски по проекту; 0 — все
+	taskCard      Task
+	taskOpen      bool
+	cardReq       int64 // последний запрошенный id — защита от гонки ответов
+	cardLoading   bool  // карточка ещё грузится — в панели «загрузка…»
+	followSeq     int   // тик «карточка за курсором»: живёт только последний
+	chatFollowSeq int   // тик «диалог за курсором»: живёт только последний
+	statusIdx     int
+	deadlineIdx   int
 
 	drafts map[string]string // черновики по диалогам
 
@@ -518,6 +519,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.taskIdx = m.cursor
 		return m, m.requestCard(msg.id)
 
+	case chatFollowMsg:
+		// диалог догоняет курсор списка чатов: живёт только последний тик и
+		// только если курсор за задержку не ушёл с чата
+		if msg.seq != m.chatFollowSeq || m.active == nil || m.tab != tabChats {
+			return m, nil
+		}
+		vc := m.visibleChats()
+		if m.cursor < 0 || m.cursor >= len(vc) || vc[m.cursor].DialogID != msg.dialogID {
+			return m, nil
+		}
+		m.saveDraft()
+		m.openDialog(m.cursor)
+		if m.active == nil {
+			return m, nil
+		}
+		return m, m.historyCmd(m.active.DialogID, 0)
+
 	case tea.MouseClickMsg:
 		return m.mouseClick(msg)
 
@@ -879,6 +897,32 @@ func (m *Model) followCard() tea.Cmd {
 	})
 }
 
+type chatFollowMsg struct {
+	seq      int
+	dialogID string
+}
+
+// followChat — открытый диалог следует за курсором списка чатов с той же
+// задержкой 250 мс, что у карточек: не копим очередь запросов истории.
+func (m *Model) followChat() tea.Cmd {
+	if m.tab != tabChats || m.active == nil {
+		return nil
+	}
+	vc := m.visibleChats()
+	if m.cursor < 0 || m.cursor >= len(vc) {
+		return nil
+	}
+	id := vc[m.cursor].DialogID
+	if id == m.active.DialogID {
+		return nil
+	}
+	m.chatFollowSeq++
+	seq := m.chatFollowSeq
+	return tea.Tick(250*time.Millisecond, func(time.Time) tea.Msg {
+		return chatFollowMsg{seq: seq, dialogID: id}
+	})
+}
+
 type readAllMsg struct{ err error }
 
 func (m Model) readAllCmd() tea.Cmd {
@@ -901,7 +945,12 @@ func (m Model) readNotifyCmd(id string) tea.Cmd {
 
 // mouseClick — клик открывает элемент списка (колесо — отдельное событие).
 func (m Model) mouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
-	if m.focus != focusList || m.overlay != ovNone {
+	if m.overlay != ovNone {
+		return m, nil
+	}
+	// клик по списку чатов работает и из поля ответа: фильтр/поиск — нет
+	if m.focus != focusList &&
+		!(m.tab == tabChats && m.focus == focusReply && msg.X <= m.listW+4) {
 		return m, nil
 	}
 	if msg.Button == tea.MouseLeft {
@@ -924,13 +973,13 @@ func (m Model) mouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 	if up {
 		if m.cursor > 0 {
 			m.cursor--
-			return m, m.followCard()
+			return m, tea.Batch(m.followCard(), m.followChat())
 		}
 		return m, nil
 	}
 	if m.cursor < m.visibleCount()-1 {
 		m.cursor++
-		return m, m.followCard()
+		return m, tea.Batch(m.followCard(), m.followChat())
 	}
 	return m, nil
 }
@@ -950,8 +999,16 @@ func (m Model) mouseLeft(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		}
 		m.cursor = start + idx
 		if m.active == nil || m.active.DialogID != vc[m.cursor].DialogID {
+			fromReply := m.focus == focusReply
+			if fromReply {
+				m.saveDraft()
+				m.reply.Blur()
+			}
 			m.openDialog(m.cursor)
 			if m.active != nil {
+				if fromReply {
+					m.replyActive()
+				}
 				return m, m.historyCmd(m.active.DialogID, 0)
 			}
 		}
@@ -1083,11 +1140,16 @@ func (m *Model) openDialog(idx int) {
 	m.openHistory()
 }
 
-// closeDialog — выход из чата: с карточки задачи возвращаемся на неё.
-func (m *Model) closeDialog() {
+// saveDraft — текст поля ответа в черновики активного диалога.
+func (m *Model) saveDraft() {
 	if m.active != nil && m.reply.Value() != "" {
 		m.drafts[m.active.DialogID] = m.reply.Value()
 	}
+}
+
+// closeDialog — выход из чата: с карточки задачи возвращаемся на неё.
+func (m *Model) closeDialog() {
+	m.saveDraft()
 	m.active = nil
 	m.resetSearch()
 	m.sel = -1

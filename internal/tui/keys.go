@@ -382,22 +382,22 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.visibleCount() > 0 && m.cursor < m.visibleCount()-1 {
 			m.cursor++
 		}
-		return m, m.followCard()
+		return m, tea.Batch(m.followCard(), m.followChat())
 	case key.Matches(msg, km.Up):
 		if m.cursor > 0 {
 			m.cursor--
 		}
-		return m, m.followCard()
+		return m, tea.Batch(m.followCard(), m.followChat())
 	case key.Matches(msg, km.Top):
 		m.cursor = 0
-		return m, m.followCard()
+		return m, tea.Batch(m.followCard(), m.followChat())
 	case key.Matches(msg, km.Bottom):
 		m.clampCursors()
 		m.cursor = m.visibleCount() - 1
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
-		return m, m.followCard()
+		return m, tea.Batch(m.followCard(), m.followChat())
 	case key.Matches(msg, km.Open):
 		return m.enterKey()
 	}
@@ -524,7 +524,19 @@ func (m Model) enterKey() (tea.Model, tea.Cmd) {
 	switch m.tab {
 	case tabChats:
 		if m.active != nil {
-			return m, nil // уже в диалоге
+			// уже в диалоге: enter на другом чате — мгновенное переключение
+			// и фокус в его поле ответа
+			vc := m.visibleChats()
+			if m.cursor >= len(vc) || vc[m.cursor].DialogID == m.active.DialogID {
+				return m, nil
+			}
+			m.saveDraft()
+			m.openDialog(m.cursor)
+			if m.active != nil {
+				m.replyActive()
+				return m, m.historyCmd(m.active.DialogID, 0)
+			}
+			return m, nil
 		}
 		m.openDialog(m.cursor)
 		if m.active != nil {

@@ -6,11 +6,133 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
 // chatRows: аватар-буква (у групп — «#»), выбранная строка ровно в listW.
+// chatFollowFixture — три чата, открыт диалог первого.
+func chatFollowFixture() Model {
+	chats := []Chat{
+		{DialogID: "d0", Title: "чат 0"},
+		{DialogID: "d1", Title: "чат 1"},
+		{DialogID: "d2", Title: "чат 2"},
+	}
+	active := chats[0]
+	return viewModel(120, 36, chats, nil, nil, &active, nil)
+}
+
+// Открытый диалог следует за курсором списка: j ставит тик 250 мс,
+// применение тика открывает чат под курсором, фокус остаётся в списке.
+func TestChatFollowOnNav(t *testing.T) {
+	m := chatFollowFixture()
+	mm, cmd := keyPress(m, "j")
+	m1 := mm
+	if m1.cursor != 1 || m1.active == nil || m1.active.DialogID != "d0" {
+		t.Fatalf("j: cursor=%d active=%+v", m1.cursor, m1.active)
+	}
+	if cmd == nil {
+		t.Fatal("j не вернул команду следования диалога")
+	}
+	fm, ok := cmd().(chatFollowMsg)
+	if !ok || fm.dialogID != "d1" {
+		t.Fatalf("тик вернул %T %+v", cmd(), cmd())
+	}
+	mm2, hcmd := m1.Update(fm)
+	m2 := mm2.(Model)
+	if m2.active == nil || m2.active.DialogID != "d1" {
+		t.Fatalf("тик не открыл чат под курсором: %+v", m2.active)
+	}
+	if m2.focus != focusList {
+		t.Fatalf("фокус ушёл из списка: %v", m2.focus)
+	}
+	if hcmd == nil {
+		t.Fatal("нет historyCmd после смены диалога")
+	}
+}
+
+// Устаревший seq или курсор, ушедший с зафиксированного чата, — тик отброшен.
+func TestChatFollowStaleDropped(t *testing.T) {
+	m := chatFollowFixture()
+	m.cursor = 1
+	m.chatFollowSeq = 5
+	mm, cmd := m.Update(chatFollowMsg{seq: 4, dialogID: "d1"})
+	got := mm.(Model)
+	if cmd != nil {
+		t.Fatal("устаревший seq запросил историю")
+	}
+	if got.active == nil || got.active.DialogID != "d0" {
+		t.Fatalf("устаревший тик сменил диалог: %+v", got.active)
+	}
+	// seq актуален, но курсор уже на другом чате
+	mm2, cmd2 := m.Update(chatFollowMsg{seq: 5, dialogID: "d2"})
+	got2 := mm2.(Model)
+	if cmd2 != nil || got2.active.DialogID != "d0" {
+		t.Fatalf("тик чужого чата применился: active=%+v cmd=%v", got2.active, cmd2)
+	}
+}
+
+// Без открытого диалога j только двигает курсор и не открывает чат.
+func TestChatFollowRequiresOpenDialog(t *testing.T) {
+	chats := []Chat{{DialogID: "d0", Title: "чат 0"}, {DialogID: "d1", Title: "чат 1"}}
+	m := viewModel(120, 36, chats, nil, nil, nil, nil)
+	mm, cmd := keyPress(m, "j")
+	got := mm
+	if got.active != nil || got.cursor != 1 || cmd != nil {
+		t.Fatalf("j без диалога: active=%+v cursor=%d cmd=%v", got.active, got.cursor, cmd)
+	}
+}
+
+// Enter в открытом диалоге на другом чате — мгновенное переключение и фокус
+// в поле ответа.
+func TestEnterSwitchesOpenDialog(t *testing.T) {
+	m := chatFollowFixture()
+	m.cursor = 1
+	mm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	got := mm.(Model)
+	if got.active == nil || got.active.DialogID != "d1" {
+		t.Fatalf("enter не открыл чат под курсором: %+v", got.active)
+	}
+	if got.focus != focusReply {
+		t.Fatalf("фокус: %v, хочу focusReply", got.focus)
+	}
+	if cmd == nil {
+		t.Fatal("нет historyCmd")
+	}
+}
+
+// Клик по строке списка из поля ответа: черновик сохранён, кликнутый чат
+// открыт, фокус вернулся в поле ответа; клик в фильтре игнорируется.
+func TestMouseClickReplySwitchesChat(t *testing.T) {
+	m := chatFollowFixture()
+	m.replyActive()
+	m.reply.SetValue("черновик")
+	mm, cmd := m.Update(tea.MouseClickMsg{X: 10, Y: 4, Button: tea.MouseLeft})
+	got := mm.(Model)
+	if got.active == nil || got.active.DialogID != "d1" {
+		t.Fatalf("клик из поля ответа не открыл чат 1: %+v", got.active)
+	}
+	if got.drafts["d0"] != "черновик" {
+		t.Fatalf("черновик первого чата: %q", got.drafts["d0"])
+	}
+	if got.focus != focusReply {
+		t.Fatalf("фокус: %v, хочу focusReply", got.focus)
+	}
+	if cmd == nil {
+		t.Fatal("нет historyCmd")
+	}
+
+	m2 := chatFollowFixture()
+	m2.active = nil
+	m2.focus = focusFilter
+	mm3, cmd3 := m2.Update(tea.MouseClickMsg{X: 10, Y: 2, Button: tea.MouseLeft})
+	m3 := mm3.(Model)
+	if m3.active != nil || m3.cursor != 0 || cmd3 != nil {
+		t.Fatalf("клик в фильтре открыл: active=%+v cursor=%d cmd=%v", m3.active, m3.cursor, cmd3)
+	}
+}
+
 func TestChatRowsAvatarAndSelection(t *testing.T) {
 	chats := []Chat{
 		{DialogID: "chat5", Title: "Команда", Counter: 2, Online: true, Preview: "привет", Time: "10:39"},
