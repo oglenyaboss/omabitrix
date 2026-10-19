@@ -59,18 +59,20 @@ type Model struct {
 	filterIn textinput.Model
 	focus    focus
 
-	active  *Chat
-	history []Message
-	noMore  bool
-	vp      viewport.Model
-	reply   textarea.Model
-	sending bool
-	loadErr string
+	active         *Chat
+	history        []Message
+	noMore         bool
+	historyLoading bool // первый запрос истории в полёте — в панели «загрузка…»
+	vp             viewport.Model
+	reply          textarea.Model
+	sending        bool
+	loadErr        string
 
 	taskIdx     int // выбранная задача в плоском списке
 	taskCard    Task
 	taskOpen    bool
 	cardReq     int64 // последний запрошенный id — защита от гонки ответов
+	cardLoading bool  // карточка ещё грузится — в панели «загрузка…»
 	statusIdx   int
 	deadlineIdx int
 
@@ -235,12 +237,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					break
 				}
 			}
-			m.cardReq = id
-			return m, m.loadTaskCardCmd(id)
+			return m, m.requestCard(id)
 		}
 		return m, nil
 
 	case historyMsg:
+		m.historyLoading = false
 		if msg.err != nil {
 			m.loadErr = msg.err.Error()
 			return m, nil
@@ -333,6 +335,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.requested != m.cardReq {
 			return m, nil // устарел: пока грузили, выбрали другую задачу
 		}
+		m.cardLoading = false
 		if msg.err != nil {
 			m.loadErr = msg.err.Error()
 			return m, nil
@@ -596,6 +599,13 @@ type taskCardMsg struct {
 	err       error
 }
 
+// requestCard — запрос карточки: защита от гонки и индикатор загрузки вместе.
+func (m *Model) requestCard(id int64) tea.Cmd {
+	m.cardReq = id
+	m.cardLoading = true
+	return m.loadTaskCardCmd(id)
+}
+
 func (m Model) loadTaskCardCmd(id int64) tea.Cmd {
 	api, ctx := m.api, m.ctx
 	return func() tea.Msg {
@@ -804,6 +814,7 @@ func (m *Model) closeDialog() {
 func (m *Model) openHistory() {
 	m.history = nil
 	m.noMore = false
+	m.historyLoading = true
 	m.renderHistory()
 }
 
@@ -837,6 +848,10 @@ func (m *Model) renderHistory() {
 	W := m.vp.Width() - 1
 	if W < 10 {
 		W = 10
+	}
+	if m.historyLoading && len(m.history) == 0 {
+		m.vp.SetContent(centered(stDim.Render("загрузка…"), W))
+		return
 	}
 	type hgroup struct {
 		author       int64
@@ -898,7 +913,12 @@ func (m *Model) renderHistory() {
 			}
 		}
 	}
-	m.vp.SetContent(b.String())
+	out := b.String()
+	if m.noMore && len(m.history) > 0 {
+		// выше всех строк — граница истории
+		out = centered(stDim.Render("— начало переписки —"), W) + "\n" + out
+	}
+	m.vp.SetContent(out)
 }
 
 func centered(s string, w int) string {
