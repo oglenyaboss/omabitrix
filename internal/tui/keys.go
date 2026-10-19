@@ -275,7 +275,7 @@ func (m Model) enterKey() (tea.Model, tea.Cmd) {
 			n := m.notify[m.cursor]
 			if n.TaskID > 0 {
 				m.tab = tabTasks
-				cmd := m.loadTaskCardCmd(n.TaskID)
+				cmd := m.requestCard(n.TaskID)
 				if n.Unread {
 					m.notify[m.cursor].Unread = false
 					return m, tea.Batch(cmd, m.readNotifyCmd(n.ID))

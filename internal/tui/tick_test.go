@@ -169,6 +169,9 @@ func TestReadNotifyOnEnter(t *testing.T) {
 	if m3.notify[1].Unread {
 		t.Fatal("enter не сбросил Unread у уведомления с задачей")
 	}
+	if m3.cardReq != 5 {
+		t.Fatalf("cardReq=%d: ответ карточки отбросится гейтом гонки", m3.cardReq)
+	}
 	if cmd == nil {
 		t.Fatal("нет команды (карточка + чтение)")
 	}
