@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -40,6 +41,7 @@ const (
 	ovHelp
 	ovStatus
 	ovDeadline
+	ovConfirm // «удалить сообщение? y/n»
 )
 
 // Model — корневая модель: одна Update, экраны — рендер-функции.
@@ -69,6 +71,13 @@ type Model struct {
 	reply          textarea.Model
 	sending        bool
 	loadErr        string
+
+	sel      int              // выделенное сообщение (-1 — режим выключен)
+	replyTo  Message          // ответ-цитата для следующей отправки
+	editID   int64            // правка своего сообщения
+	delID    int64            // сообщение под подтверждением удаления
+	mentions map[string]int64 // имена, вставленные по «@»: имя → id автора
+	msgLine  map[int64]int    // стартовая строка сообщения в рендере истории
 
 	taskIdx     int // выбранная задача в плоском списке
 	taskCard    Task
@@ -125,7 +134,7 @@ func NewModel(api *API, ctx context.Context) Model {
 	return Model{
 		api: api, ctx: ctx,
 		spinner: sp, reply: ta, filterIn: ti, help: h,
-		drafts: map[string]string{},
+		sel: -1, drafts: map[string]string{}, mentions: map[string]int64{},
 	}
 }
 
@@ -265,11 +274,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.noMore = msg.noMore
 		var read tea.Cmd
 		if m.active != nil && msg.dialogID == m.active.DialogID {
+			selID := int64(0)
+			if m.sel >= 0 && m.sel < len(m.history) {
+				selID = m.history[m.sel].ID
+			}
 			if msg.prepend {
 				// догрузка старых: держим позицию (YOffset += прирост)
 				old := m.vp.TotalLineCount()
 				atBottom := m.vp.AtBottom() || old == 0
 				m.history = append(msg.rows, m.history...)
+				m.keepSel(selID)
 				m.renderHistory()
 				if !atBottom {
 					m.vp.SetYOffset(m.vp.TotalLineCount() - old)
@@ -279,6 +293,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// только если он и был у низа
 				atBottom := m.vp.AtBottom() || len(m.history) == 0
 				m.history = mergeHistory(m.history, msg.rows)
+				m.keepSel(selID)
 				m.renderHistory()
 				if atBottom {
 					m.vp.GotoBottom()
@@ -300,6 +315,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sentMsg:
 		m.sending = false
+		m.replyTo = Message{} // цитата ушла вместе с сообщением (или чат сменился);
+		// при ошибке ответ на цитату не восстанавливаем — текст вернулся в поле
 		same := m.active != nil && m.active.DialogID == msg.dialogID
 		if msg.err != nil {
 			m.loadErr = "не отправлено: " + msg.err.Error()
@@ -364,6 +381,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.loadTaskCardCmd(m.taskCard.ID), m.loadCmd("tasks"))
 		}
 		return m, m.loadCmd("tasks")
+
+	case actionMsg:
+		m.sending = false
+		if msg.err != nil {
+			m.loadErr = msg.what + ": " + msg.err.Error()
+			return m, m.refreshActiveCmd()
+		}
+		if msg.what == "удаление" {
+			// успех: убираем сообщение из истории локально
+			for i := range m.history {
+				if m.history[i].ID == msg.id {
+					m.history = append(m.history[:i], m.history[i+1:]...)
+					break
+				}
+			}
+			if m.sel >= len(m.history) {
+				m.sel = -1
+			}
+			m.renderHistory()
+		}
+		return m, nil
 
 	case taskCardMsg:
 		if msg.requested != m.cardReq {
@@ -469,6 +507,9 @@ func (m *Model) layout() {
 	replyRows := 2 // пустая + подсказка «r — ответить»
 	if m.focus == focusReply {
 		replyRows = 3
+		if m.replyTo.ID > 0 || m.editID > 0 {
+			replyRows = 4 // + строка цитаты/правки над полем
+		}
 	}
 	m.vp.SetHeight(m.bodyH - 2 - replyRows)
 	if m.vp.Height() < 2 {
@@ -597,12 +638,41 @@ type sentMsg struct {
 }
 
 // sendCmd — текст приходит параметром: поле уже очищено при отправке.
-func (m Model) sendCmd(text string) tea.Cmd {
+// replyID > 0 — ответ-цитата.
+func (m Model) sendCmd(text string, replyID int64) tea.Cmd {
 	api, ctx := m.api, m.ctx
 	dialogID := m.active.DialogID
 	return func() tea.Msg {
-		id, err := api.Send(ctx, dialogID, text, 0)
+		id, err := api.Send(ctx, dialogID, text, replyID)
 		return sentMsg{dialogID: dialogID, id: id, text: text, err: err}
+	}
+}
+
+// actionMsg — ответ правки/удаления/лайка; при ошибке история перечитывается.
+type actionMsg struct {
+	err  error
+	what string // «правка» / «удаление» / «лайк» — префикс ошибки
+	id   int64  // сообщение; для удаления — что убрать из истории
+}
+
+func (m Model) updateCmd(id int64, text string) tea.Cmd {
+	api, ctx := m.api, m.ctx
+	return func() tea.Msg {
+		return actionMsg{err: api.UpdateMessage(ctx, id, text), what: "правка", id: id}
+	}
+}
+
+func (m Model) deleteCmd(id int64) tea.Cmd {
+	api, ctx := m.api, m.ctx
+	return func() tea.Msg {
+		return actionMsg{err: api.DeleteMessage(ctx, id), what: "удаление", id: id}
+	}
+}
+
+func (m Model) likeCmd(id int64, like bool) tea.Cmd {
+	api, ctx := m.api, m.ctx
+	return func() tea.Msg {
+		return actionMsg{err: api.LikeMessage(ctx, id, like), what: "лайк", id: id}
 	}
 }
 
@@ -934,6 +1004,8 @@ func (m *Model) closeDialog() {
 		m.drafts[m.active.DialogID] = m.reply.Value()
 	}
 	m.active = nil
+	m.sel = -1
+	m.mentions = map[string]int64{}
 	if m.taskOpen {
 		m.tab = tabTasks
 	}
@@ -943,6 +1015,10 @@ func (m *Model) openHistory() {
 	m.history = nil
 	m.noMore = false
 	m.historyLoading = true
+	m.sel = -1
+	m.editID = 0
+	m.replyTo = Message{}
+	m.mentions = map[string]int64{}
 	m.renderHistory()
 }
 
@@ -967,8 +1043,9 @@ func mergeHistory(old, fresh []Message) []Message {
 
 // renderHistory — tele-стиль: подряд идущие сообщения одного автора
 // группируются (имя один раз), mine — маркером без имени, даты по центру.
-// потолок: prepend-догрузка может слить две серии одного автора на границе —
-// сдвиг скролла на 1–2 строки, приемлемо.
+// Выделенному (sel) — маркер в колонке отступа, сообщениям — цитата ответа
+// и сердечки лайков. потолок: prepend-догрузка может слить две серии одного
+// автора на границе — сдвиг скролла на 1–2 строки, приемлемо.
 func (m *Model) renderHistory() {
 	if m.vp.Width() <= 0 {
 		return
@@ -981,53 +1058,83 @@ func (m *Model) renderHistory() {
 		m.vp.SetContent(centered(stDim.Render("загрузка…"), W))
 		return
 	}
+	type hmsg struct {
+		msg Message
+		idx int // позиция в m.history — сравнение с sel
+	}
 	type hgroup struct {
 		author       int64
 		name         string
 		mine, system bool
-		msgs         []Message
+		msgs         []hmsg
 	}
 	var groups []hgroup
-	for _, msg := range m.history {
+	for i, msg := range m.history {
 		if msg.System {
-			groups = append(groups, hgroup{system: true, msgs: []Message{msg}})
+			groups = append(groups, hgroup{system: true, msgs: []hmsg{{msg, i}}})
 			continue
 		}
 		if n := len(groups); n > 0 && !groups[n-1].system &&
 			groups[n-1].mine == msg.Mine && groups[n-1].author == msg.AuthorID {
-			groups[n-1].msgs = append(groups[n-1].msgs, msg)
+			groups[n-1].msgs = append(groups[n-1].msgs, hmsg{msg, i})
 			continue
 		}
 		groups = append(groups, hgroup{author: msg.AuthorID, name: msg.Name,
-			mine: msg.Mine, msgs: []Message{msg}})
+			mine: msg.Mine, msgs: []hmsg{{msg, i}}})
 	}
 	var b strings.Builder
 	var prevDay string
+	line := 0
+	m.msgLine = map[int64]int{} // стартовые строки сообщений — скролл к выделенному
+
+	// writeMsg — блок одного сообщения: цитата, затем текст; у выделенного
+	// каждая строка блока получает маркер в колонке отступа.
+	writeMsg := func(hm hmsg, head, text string) {
+		m.msgLine[hm.msg.ID] = line
+		var lines []string
+		if q := m.quoteLine(hm.msg, W-6); q != "" {
+			lines = append(lines, q)
+		}
+		lines = append(lines, strings.Split(indentWrap(head+text, W, 2), "\n")...)
+		if hm.idx == m.sel {
+			for i := range lines {
+				lines[i] = stCursor.Render("▌") + " " + lines[i]
+			}
+		}
+		for _, l := range lines {
+			b.WriteString(l + "\n")
+			line++
+		}
+	}
 	for gi, g := range groups {
-		first := g.msgs[0]
+		first := g.msgs[0].msg
 		if first.DayKey != prevDay && first.DayLabel != "" {
 			if gi > 0 {
 				b.WriteString("\n")
+				line++
 			}
 			b.WriteString(dayDivider(stDim.Render(first.DayLabel), W) + "\n")
+			line++
 			prevDay = first.DayKey
 		} else if gi > 0 {
 			b.WriteString("\n")
+			line++
 		}
 		switch {
 		case g.system:
-			for _, msg := range g.msgs {
-				b.WriteString(centered(stDim.Render("· "+msg.Text+" ·"), W) + "\n")
+			for _, hm := range g.msgs {
+				m.msgLine[hm.msg.ID] = line
+				b.WriteString(centered(stDim.Render("· "+hm.msg.Text+" ·"), W) + "\n")
+				line++
 			}
 		case g.mine:
-			for i, msg := range g.msgs {
+			for i, hm := range g.msgs {
+				text := stBubbleMine.Render(hm.msg.Text) + hearts(hm.msg)
 				if i == 0 {
-					line := stAccent.Render("›") + stDim.Render(" "+msg.Time+" ") +
-						stBubbleMine.Render(msg.Text)
-					b.WriteString(indentWrap(line, W, 2) + "\n")
+					writeMsg(hm, stAccent.Render("›")+stDim.Render(" "+hm.msg.Time+" "), text)
 					continue
 				}
-				b.WriteString(indentWrap(stBubbleMine.Render(msg.Text), W, 2) + "\n")
+				writeMsg(hm, "", text)
 			}
 		default:
 			name := g.name
@@ -1036,8 +1143,13 @@ func (m *Model) renderHistory() {
 			}
 			b.WriteString(authorStyle(g.author).Render(name) +
 				stDim.Render(" "+first.Time) + "\n")
-			for _, msg := range g.msgs {
-				b.WriteString(indentWrap(msg.Text, W, 2) + "\n")
+			line++
+			for _, hm := range g.msgs {
+				text := hm.msg.Text + hearts(hm.msg)
+				if hm.msg.MentionsMe {
+					text = stBold.Render(text) // упомянули меня — жирным
+				}
+				writeMsg(hm, "", text)
 			}
 		}
 	}
@@ -1047,6 +1159,129 @@ func (m *Model) renderHistory() {
 		out = centered(stDim.Render("— начало переписки —"), W) + "\n" + out
 	}
 	m.vp.SetContent(out)
+}
+
+// keepSel — выделение переживает пересборку истории: ищем то же сообщение.
+func (m *Model) keepSel(id int64) {
+	m.sel = -1
+	if id <= 0 {
+		return
+	}
+	for i := range m.history {
+		if m.history[i].ID == id {
+			m.sel = i
+			return
+		}
+	}
+}
+
+// enterSel — режим выделения: встаём на последнее не-системное сообщение.
+func (m *Model) enterSel() {
+	for i := len(m.history) - 1; i >= 0; i-- {
+		if !m.history[i].System {
+			m.selTo(i)
+			return
+		}
+	}
+	m.sel = -1
+}
+
+// selTo — сменить выделение: маркер рисуется в renderHistory,
+// поэтому любая смена требует перерисовки; выделенное держим в кадре.
+func (m *Model) selTo(idx int) {
+	m.sel = idx
+	m.renderHistory()
+	m.scrollToSel()
+}
+
+// selStep — шаг выделения, системные перескакиваем.
+func (m *Model) selStep(dir int) {
+	for i := m.sel + dir; i >= 0 && i < len(m.history); i += dir {
+		if !m.history[i].System {
+			m.sel = i
+			return
+		}
+	}
+}
+
+// topExtra — строка «начало переписки» над контентом (msgLine её не считает).
+func (m *Model) topExtra() int {
+	if m.noMore && len(m.history) > 0 {
+		return 1
+	}
+	return 0
+}
+
+// scrollToSel — держать выделенное сообщение в кадре.
+func (m *Model) scrollToSel() {
+	if m.sel < 0 || m.sel >= len(m.history) {
+		return
+	}
+	start, ok := m.msgLine[m.history[m.sel].ID]
+	if !ok {
+		return
+	}
+	start += m.topExtra()
+	if start < m.vp.YOffset() || start >= m.vp.YOffset()+m.vp.Height() {
+		m.vp.SetYOffset(start)
+	}
+}
+
+// quoteLine — строка-цитата «↳ Имя: текст», если сообщение-ответ найдено
+// в истории; w — ширина для резки.
+func (m *Model) quoteLine(msg Message, w int) string {
+	if msg.ReplyID <= 0 {
+		return ""
+	}
+	for _, h := range m.history {
+		if h.ID == msg.ReplyID {
+			name := h.Name
+			if name == "" {
+				name = "?"
+			}
+			return stDim.Render(truncate("↳ "+name+": "+h.Text, w))
+		}
+	}
+	return ""
+}
+
+// hearts — хвостик с лайками « ♥ 2»; мой лайк — акцентом.
+func hearts(msg Message) string {
+	if msg.Likes <= 0 {
+		return ""
+	}
+	st := stDim
+	if msg.LikedByMe {
+		st = stAccent
+	}
+	return " " + st.Render("♥ "+strconv.Itoa(msg.Likes))
+}
+
+// applyEdit — оптимистичная правка: текст в истории сразу, ответ сервера
+// подтвердит или откатит перечиткой.
+func (m *Model) applyEdit(id int64, text string) {
+	for i := range m.history {
+		if m.history[i].ID == id {
+			m.history[i].Text = text
+			break
+		}
+	}
+	m.renderHistory()
+}
+
+// expandMentions — «@Имя» из подсказок → BB-код портала; длинные имена
+// первыми, чтобы «Анна» не съела «@Анна Петрова».
+func (m Model) expandMentions(text string) string {
+	names := make([]string, 0, len(m.mentions))
+	for n := range m.mentions {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(i, j int) bool { return len(names[i]) > len(names[j]) })
+	for _, n := range names {
+		tag := "[USER=" + strconv.FormatInt(m.mentions[n], 10) + "]" + n + "[/USER]"
+		text = strings.ReplaceAll(text, "@"+n, tag)
+	}
+	return text
 }
 
 func centered(s string, w int) string {

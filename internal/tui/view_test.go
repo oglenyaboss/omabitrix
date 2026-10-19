@@ -1,15 +1,21 @@
 package tui
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"omabitrix/internal/b24"
 )
 
 func viewModel(w, h int, chats []Chat, tasks []Task, notify []NotifyItem, active *Chat, msgs []Message) Model {
@@ -670,5 +676,354 @@ func TestBrowserURLFilteredNotify(t *testing.T) {
 	m.filter = "фид"
 	if got := m.browserURL(); !strings.HasSuffix(got, "/task/view/9/") {
 		t.Fatalf("курсор на отфильтрованном уведе: %q", got)
+	}
+}
+
+// ---- режим выделения сообщения (v)
+
+// selFixture — диалог: чужое, системное, снова чужое и своё сообщение.
+func selFixture() Model {
+	msgs := []Message{
+		{ID: 1, AuthorID: 42, Name: "Анна", Text: "первое", Time: "10:00", DayKey: "d", DayLabel: "сегодня"},
+		{ID: 2, AuthorID: 0, System: true, Text: "Анна вошла", Time: "10:01", DayKey: "d", DayLabel: "сегодня"},
+		{ID: 3, AuthorID: 42, Name: "Анна", Text: "третье", Time: "10:02", DayKey: "d", DayLabel: "сегодня"},
+		{ID: 4, Text: "моё", Time: "10:03", DayKey: "d", DayLabel: "сегодня", Mine: true},
+	}
+	active := &Chat{DialogID: "chat7"}
+	return viewModel(120, 36, nil, nil, nil, active, msgs)
+}
+
+func TestSelectEnterAndSkipSystem(t *testing.T) {
+	m := selFixture()
+	m2, _ := keyPress(m, "v")
+	if m2.sel != 3 {
+		t.Fatalf("v: sel=%d, хочу 3 (последнее не-системное)", m2.sel)
+	}
+	m3, _ := keyPress(m2, "k")
+	if m3.sel != 2 {
+		t.Fatalf("k: sel=%d, хочу 2 (системное перескочено)", m3.sel)
+	}
+	m4, _ := keyPress(m3, "k")
+	if m4.sel != 0 {
+		t.Fatalf("k: sel=%d, хочу 0", m4.sel)
+	}
+	m5, _ := keyPress(m4, "j")
+	if m5.sel != 2 {
+		t.Fatalf("j: sel=%d, хочу 2 (обратно через системное)", m5.sel)
+	}
+	m6, _ := keyPress(m5, "G")
+	if m6.sel != 3 {
+		t.Fatalf("G: sel=%d, хочу 3", m6.sel)
+	}
+	m7, _ := keyPress(m6, "esc")
+	if m7.sel != -1 {
+		t.Fatalf("esc не вышел из режима: sel=%d", m7.sel)
+	}
+}
+
+func TestSelectQuoteReply(t *testing.T) {
+	var mu sync.Mutex
+	var addParams map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/im.message.add.json") {
+			mu.Lock()
+			json.NewDecoder(r.Body).Decode(&addParams)
+			mu.Unlock()
+		}
+		fmt.Fprint(w, `{"result":7}`)
+	}))
+	defer srv.Close()
+
+	m := selFixture()
+	m.api = &API{C: b24.New(srv.URL), My: 75}
+	m.ctx = context.Background()
+	m2, _ := keyPress(m, "v")  // sel=3 — своё
+	m3, _ := keyPress(m2, "k") // sel=2 — Анна
+	m4, _ := keyPress(m3, "r")
+	if m4.sel != -1 || m4.focus != focusReply || m4.replyTo.ID != 3 {
+		t.Fatalf("r: sel=%d focus=%v replyTo=%+v", m4.sel, m4.focus, m4.replyTo)
+	}
+	if v := ansi.Strip(m4.View().Content); !strings.Contains(v, "↳ ответ Анна: третье") {
+		t.Fatalf("строки цитаты нет в кадре:\n%s", v)
+	}
+	m5 := m4
+	m5.reply.SetValue("ответ")
+	m6, cmd := m5.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter не отправил")
+	}
+	if sm, ok := cmd().(sentMsg); !ok || sm.err != nil {
+		t.Fatalf("команда не отправка: %T", cmd())
+	}
+	mu.Lock()
+	if id, _ := addParams["REPLY_ID"].(float64); int64(id) != 3 {
+		t.Errorf("REPLY_ID: %v", addParams["REPLY_ID"])
+	}
+	if addParams["MESSAGE"] != "ответ" {
+		t.Errorf("MESSAGE: %v", addParams["MESSAGE"])
+	}
+	mu.Unlock()
+	// успех — цитата снята
+	m7, _ := m6.Update(sentMsg{dialogID: "chat7", id: 7, text: "ответ"})
+	if got := m7.(Model).replyTo.ID; got != 0 {
+		t.Fatalf("после успешной отправки replyTo.ID=%d, хочу 0", got)
+	}
+}
+
+func TestSelectEditOwnOnly(t *testing.T) {
+	m := selFixture()
+	m2, _ := keyPress(m, "v")  // sel=3 — своё
+	m3, _ := keyPress(m2, "k") // sel=2 — чужое
+	m4, _ := keyPress(m3, "e")
+	if m4.editID != 0 || m4.flash != "можно только свои" {
+		t.Fatalf("e на чужом: editID=%d flash=%q", m4.editID, m4.flash)
+	}
+	m5, _ := keyPress(m4, "j") // sel=3
+	m6, _ := keyPress(m5, "e")
+	if m6.editID != 4 || m6.reply.Value() != "моё" || m6.focus != focusReply {
+		t.Fatalf("e на своём: editID=%d value=%q focus=%v",
+			m6.editID, m6.reply.Value(), m6.focus)
+	}
+	if v := ansi.Strip(m6.View().Content); !strings.Contains(v, "✎ редактирование") {
+		t.Fatalf("строки правки нет в кадре:\n%s", v)
+	}
+	// esc при правке: поле чистое, черновик не сохранять
+	m7, _ := keyPress(m6, "esc")
+	if m7.editID != 0 || m7.reply.Value() != "" || m7.drafts["chat7"] != "" {
+		t.Fatalf("esc при правке: editID=%d value=%q draft=%q",
+			m7.editID, m7.reply.Value(), m7.drafts["chat7"])
+	}
+}
+
+func TestSelectEditSendsUpdate(t *testing.T) {
+	var mu sync.Mutex
+	var updParams map[string]any
+	var addHits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/im.message.update.json"):
+			mu.Lock()
+			json.NewDecoder(r.Body).Decode(&updParams)
+			mu.Unlock()
+		case strings.HasSuffix(r.URL.Path, "/im.message.add.json"):
+			mu.Lock()
+			addHits++
+			mu.Unlock()
+		}
+		fmt.Fprint(w, `{"result":true}`)
+	}))
+	defer srv.Close()
+
+	m := selFixture()
+	m.api = &API{C: b24.New(srv.URL), My: 75}
+	m.ctx = context.Background()
+	m2, _ := keyPress(m, "v") // sel=3 — своё (ID 4)
+	m3, _ := keyPress(m2, "e")
+	m3.reply.SetValue("моё исправлено")
+	m4, cmd := m3.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m4.(Model).editID != 0 {
+		t.Fatalf("editID не сброшен: %d", m4.(Model).editID)
+	}
+	if got := m4.(Model).history[3].Text; got != "моё исправлено" {
+		t.Fatalf("оптимичной правки нет: %q", got)
+	}
+	am, ok := cmd().(actionMsg)
+	if !ok || am.err != nil {
+		t.Fatalf("команда не правка: %T", cmd())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if id, _ := updParams["MESSAGE_ID"].(float64); int64(id) != 4 {
+		t.Errorf("MESSAGE_ID: %v", updParams["MESSAGE_ID"])
+	}
+	if updParams["MESSAGE"] != "моё исправлено" {
+		t.Errorf("MESSAGE: %v", updParams["MESSAGE"])
+	}
+	if addHits != 0 {
+		t.Errorf("правка ушла как im.message.add: %d раз", addHits)
+	}
+}
+
+func TestSelectDeleteConfirm(t *testing.T) {
+	var mu sync.Mutex
+	var delHits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/im.message.delete.json") {
+			mu.Lock()
+			delHits++
+			mu.Unlock()
+		}
+		fmt.Fprint(w, `{"result":true}`)
+	}))
+	defer srv.Close()
+
+	m := selFixture()
+	m.api = &API{C: b24.New(srv.URL), My: 75}
+	m.ctx = context.Background()
+	m2, _ := keyPress(m, "v")  // sel=3 — своё
+	m3, _ := keyPress(m2, "k") // sel=2 — чужое
+	m4, _ := keyPress(m3, "D")
+	if m4.overlay == ovConfirm || m4.flash != "можно только свои" {
+		t.Fatalf("D на чужом: overlay=%v flash=%q", m4.overlay, m4.flash)
+	}
+	m5, _ := keyPress(m4, "j") // sel=3
+	m6, _ := keyPress(m5, "D")
+	if m6.overlay != ovConfirm {
+		t.Fatalf("D не открыл подтверждение: %v", m6.overlay)
+	}
+	if v := ansi.Strip(m6.View().Content); !strings.Contains(v, "удалить сообщение? y/n") {
+		t.Fatalf("подтверждения нет в кадре:\n%s", v)
+	}
+	// любая другая клавиша закрывает без удаления
+	m7, _ := keyPress(m6, "n")
+	if m7.overlay != ovNone || len(m7.history) != 4 {
+		t.Fatalf("n: overlay=%v history=%d", m7.overlay, len(m7.history))
+	}
+	// y — удаление: запрос и локальное исчезновение
+	m8, _ := keyPress(m7, "D")
+	m9, cmd := keyPress(m8, "y")
+	if m9.overlay != ovNone || cmd == nil {
+		t.Fatalf("y: overlay=%v cmd=%v", m9.overlay, cmd)
+	}
+	am, ok := cmd().(actionMsg)
+	if !ok || am.err != nil {
+		t.Fatalf("команда не удаление: %T", cmd())
+	}
+	m10, _ := m9.Update(am)
+	m11 := m10.(Model)
+	if len(m11.history) != 3 {
+		t.Fatalf("сообщение не убрано из истории: %d", len(m11.history))
+	}
+	for _, h := range m11.history {
+		if h.ID == 4 {
+			t.Fatal("удалённое сообщение осталось в истории")
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if delHits != 1 {
+		t.Errorf("im.message.delete вызван %d раз", delHits)
+	}
+}
+
+func TestSelectLike(t *testing.T) {
+	m := selFixture()
+	m2, _ := keyPress(m, "v") // sel=3
+	m3, cmd := keyPress(m2, "l")
+	if m3.history[3].Likes != 1 || !m3.history[3].LikedByMe {
+		t.Fatalf("лайк не применился: %+v", m3.history[3])
+	}
+	if cmd == nil {
+		t.Fatal("нет команды лайка")
+	}
+	m4, _ := keyPress(m3, "l")
+	if m4.history[3].Likes != 0 || m4.history[3].LikedByMe {
+		t.Fatalf("повторный l не снял лайк: %+v", m4.history[3])
+	}
+	// сердечки в рендере: у сообщения с моим лайком
+	msgs := []Message{{ID: 1, AuthorID: 42, Name: "Анна", Text: "раз",
+		Likes: 2, LikedByMe: true, Time: "10:00", DayKey: "d", DayLabel: "сегодня"}}
+	mr := viewModel(120, 36, nil, nil, nil, nil, msgs)
+	mr.renderHistory()
+	if v := ansi.Strip(mr.vp.View()); !strings.Contains(v, "♥ 2") {
+		t.Fatalf("сердечек нет:\n%s", v)
+	}
+}
+
+func TestSelectMention(t *testing.T) {
+	var mu sync.Mutex
+	var addParams map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/im.message.add.json") {
+			mu.Lock()
+			json.NewDecoder(r.Body).Decode(&addParams)
+			mu.Unlock()
+		}
+		fmt.Fprint(w, `{"result":7}`)
+	}))
+	defer srv.Close()
+
+	m := selFixture()
+	m.api = &API{C: b24.New(srv.URL), My: 75}
+	m.ctx = context.Background()
+	m2, _ := keyPress(m, "v")  // sel=3 — своё (без имени)
+	m3, _ := keyPress(m2, "k") // sel=2 — Анна
+	m4, _ := keyPress(m3, "@")
+	if m4.reply.Value() != "@Анна " || m4.mentions["Анна"] != 42 || m4.focus != focusReply {
+		t.Fatalf("@: value=%q mentions=%v focus=%v",
+			m4.reply.Value(), m4.mentions, m4.focus)
+	}
+	m5 := m4
+	m5.reply.SetValue(m5.reply.Value() + "что думаешь") // печатаем после подсказки
+	_, cmd := m5.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter не отправил")
+	}
+	if sm, ok := cmd().(sentMsg); !ok || sm.err != nil {
+		t.Fatalf("команда не отправка: %T", cmd())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if addParams["MESSAGE"] != "[USER=42]Анна[/USER] что думаешь" {
+		t.Errorf("MESSAGE: %v", addParams["MESSAGE"])
+	}
+}
+
+func TestSelectRenderQuoteLikesWidth(t *testing.T) {
+	msgs := []Message{
+		{ID: 1, AuthorID: 42, Name: "Анна", Text: "смотри на это", Time: "10:00", DayKey: "d", DayLabel: "сегодня"},
+		{ID: 2, AuthorID: 42, Name: "Кристи娜", Text: "проверь плиз", ReplyID: 1, Likes: 2, LikedByMe: true,
+			MentionsMe: true, Time: "10:01", DayKey: "d", DayLabel: "сегодня"},
+	}
+	active := &Chat{DialogID: "chat7"}
+	m := viewModel(80, 24, nil, nil, nil, active, msgs)
+	m2, _ := keyPress(m, "v")
+	v := m2.View().Content
+	s := ansi.Strip(v)
+	if !strings.Contains(s, "♥ 2") {
+		t.Fatalf("сердечек нет:\n%s", s)
+	}
+	if !strings.Contains(s, "↳ Анна: смотри на это") {
+		t.Fatalf("цитаты нет:\n%s", s)
+	}
+	marked := false
+	for _, line := range strings.Split(s, "\n") {
+		if strings.Contains(line, "▌") && strings.Contains(line, "проверь плиз") {
+			marked = true
+		}
+	}
+	if !marked {
+		t.Fatalf("выделенное не помечено:\n%s", s)
+	}
+	for i, line := range strings.Split(v, "\n") {
+		if lw := lipgloss.Width(line); lw > 80 {
+			t.Fatalf("строка %d шире 80: %d", i, lw)
+		}
+	}
+}
+
+func TestSelectSurvivesHistoryMsg(t *testing.T) {
+	msgs := []Message{
+		{ID: 10, AuthorID: 42, Name: "Анна", Text: "десять", Time: "10:00", DayKey: "d", DayLabel: "сегодня"},
+	}
+	active := &Chat{DialogID: "chat7"}
+	m := viewModel(120, 36, nil, nil, nil, active, msgs)
+	m2, _ := keyPress(m, "v") // sel=0
+	// догрузка старых: выделение следует за своим сообщением
+	m3, _ := m2.Update(historyMsg{dialogID: "chat7", prepend: true,
+		rows: []Message{{ID: 5, AuthorID: 42, Name: "Анна", Text: "раньше", DayKey: "d", DayLabel: "сегодня"}}})
+	if m3.(Model).sel != 1 || m3.(Model).history[1].ID != 10 {
+		t.Fatalf("prepend: sel=%d history[1].ID=%d",
+			m3.(Model).sel, m3.(Model).history[1].ID)
+	}
+	// выделенное удалено на сервере (в свежей странице его нет) — sel сброшен
+	m4, _ := m3.Update(historyMsg{dialogID: "chat7",
+		rows: []Message{{ID: 9, AuthorID: 42, Name: "Анна", Text: "девять", DayKey: "d", DayLabel: "сегодня"}}})
+	m5 := m4.(Model)
+	if m5.sel != -1 {
+		t.Fatalf("исчезнувшее сообщение: sel=%d", m5.sel)
+	}
+	if n := len(m5.history); n != 2 || m5.history[1].ID != 9 {
+		t.Fatalf("слияние истории: %+v", m5.history)
 	}
 }
