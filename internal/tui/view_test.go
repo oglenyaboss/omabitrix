@@ -672,3 +672,19 @@ func TestBrowserURLFilteredNotify(t *testing.T) {
 		t.Fatalf("курсор на отфильтрованном уведе: %q", got)
 	}
 }
+
+func TestReplyFromTaskCard(t *testing.T) {
+	m := viewModel(120, 36, nil, []Task{{ID: 1, Title: "x", Status: "2", ChatID: 7}}, nil, nil, nil)
+	m.tab = tabTasks
+	m.taskOpen = true
+	m.taskCard = Task{ID: 1, Title: "x", Status: "2", ChatID: 7}
+	m2, _ := keyPress(m, "r")
+	if m2.active == nil || m2.active.DialogID != "chat7" || m2.focus != focusReply {
+		t.Fatalf("r на карточке: чат задачи с полем ответа, got active=%+v focus=%v", m2.active, m2.focus)
+	}
+	m.taskCard.ChatID = 0
+	m3, _ := keyPress(m, "r")
+	if m3.active != nil || m3.focus != focusList || m3.flash == "" {
+		t.Fatalf("r без чата задачи: флеш, без перехода; got active=%+v flash=%q", m3.active, m3.flash)
+	}
+}

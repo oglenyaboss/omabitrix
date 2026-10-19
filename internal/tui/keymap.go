@@ -32,6 +32,7 @@ type keyMap struct {
 	TaskChat  key.Binding // c
 	ReadAll   key.Binding // A
 	Browser   key.Binding // o
+	Comment   key.Binding // r на карточке задачи
 }
 
 var km = keyMap{
@@ -139,6 +140,10 @@ var km = keyMap{
 		key.WithKeys("o"),
 		key.WithHelp("o", "в браузере"),
 	),
+	Comment: key.NewBinding(
+		key.WithKeys("r"),
+		key.WithHelp("r", "комментарий"),
+	),
 	ReadAll: key.NewBinding(
 		key.WithKeys("A"),
 		key.WithHelp("A", "всё прочитано"),
@@ -155,7 +160,7 @@ func (m Model) shortHelp() []key.Binding {
 	case m.tab == tabTasks && m.taskOpen:
 		b := []key.Binding{km.Status, km.Deadline}
 		if m.taskCard.ChatID > 0 {
-			b = append(b, km.TaskChat)
+			b = append(b, km.TaskChat, km.Comment)
 		}
 		return append(b, km.Browser, km.Quit, km.Help)
 	case m.tab == tabTasks:
@@ -177,7 +182,7 @@ func (m Model) fullHelp() [][]key.Binding {
 		// чаты
 		{km.Reply, km.Send, km.Cancel, km.Older},
 		// задачи
-		{km.Status, km.Deadline, km.TaskChat},
+		{km.Status, km.Deadline, km.TaskChat, km.Comment},
 		// уведы
 		{km.ReadAll},
 		// общее

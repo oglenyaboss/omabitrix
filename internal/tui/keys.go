@@ -160,6 +160,15 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.replyActive()
 			return m, m.reply.Focus()
 		}
+		if m.tab == tabTasks && m.taskOpen {
+			// комментарий к задаче — это сообщение в её чат
+			cmd := m.openTaskChat()
+			if m.active == nil {
+				return m, nil
+			}
+			m.replyActive()
+			return m, tea.Batch(cmd, m.reply.Focus())
+		}
 	case key.Matches(msg, km.Filter):
 		m.focus = focusFilter
 		return m, m.filterIn.Focus()
@@ -193,15 +202,8 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case key.Matches(msg, km.TaskChat):
 		if m.tab == tabTasks && m.taskOpen {
-			if m.taskCard.ChatID <= 0 {
-				m.flash = "у задачи нет чата"
-				m.flashAt = m.api.now()
-				return m, nil
-			}
-			id := "chat" + fmt.Sprint(m.taskCard.ChatID)
-			m.openChatByDialog(id)
-			m.active.Title = m.taskCard.Title
-			return m, m.historyCmd(id, 0)
+			cmd := m.openTaskChat()
+			return m, cmd
 		}
 	}
 
@@ -250,6 +252,19 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// openTaskChat — чат открытой карточки; нет чата — флеш, active остаётся nil.
+func (m *Model) openTaskChat() tea.Cmd {
+	if m.taskCard.ChatID <= 0 {
+		m.flash = "у задачи нет чата"
+		m.flashAt = m.api.now()
+		return nil
+	}
+	id := "chat" + fmt.Sprint(m.taskCard.ChatID)
+	m.openChatByDialog(id)
+	m.active.Title = m.taskCard.Title
+	return m.historyCmd(id, 0)
 }
 
 // switchTab — смена вкладки: фильтр вкладко-специфичен, сбрасываем;
