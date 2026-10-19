@@ -117,6 +117,60 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	// поиск по истории: всё в input
+	if m.focus == focusSearch {
+		switch msg.Code {
+		case tea.KeyEsc:
+			m.focus = focusList
+			m.searchIn.Blur()
+			return m, nil
+		case tea.KeyEnter:
+			m.focus = focusList
+			m.searchIn.Blur()
+			if m.active != nil {
+				q := strings.TrimSpace(m.searchIn.Value())
+				m.searchOn = true
+				m.searching = true
+				return m, m.searchCmd(m.active.ChatID, q)
+			}
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.searchIn, cmd = m.searchIn.Update(msg)
+		return m, cmd
+	}
+
+	// результаты поиска в панели диалога: esc/q — назад к истории,
+	// навигация — прокрутка окна результатов; остальное — как обычно
+	if m.searchOn {
+		handled := true
+		switch {
+		case key.Matches(msg, km.Back), key.Matches(msg, km.Quit):
+			m.searchOn = false
+		case key.Matches(msg, km.PageDown):
+			m.searchOff += m.vp.Height()
+		case key.Matches(msg, km.PageUp):
+			m.searchOff -= m.vp.Height()
+		case key.Matches(msg, km.Down):
+			m.searchOff += 2 // один результат — две строки
+		case key.Matches(msg, km.Up):
+			m.searchOff -= 2
+		case key.Matches(msg, km.Reply), key.Matches(msg, km.Older):
+			// ответ и догрузка истории поверх результатов не действуют
+		default:
+			handled = false
+		}
+		if handled {
+			if max := m.searchMaxOff(); m.searchOff > max {
+				m.searchOff = max
+			}
+			if m.searchOff < 0 {
+				m.searchOff = 0
+			}
+			return m, nil
+		}
+	}
+
 	// глобальные
 	switch {
 	case key.Matches(msg, km.Quit), key.Matches(msg, km.Back):
@@ -161,6 +215,11 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.reply.Focus()
 		}
 	case key.Matches(msg, km.Filter):
+		if m.tab == tabChats && m.active != nil {
+			// открытый диалог: поиск по его истории, не фильтр списка
+			m.focus = focusSearch
+			return m, m.searchIn.Focus()
+		}
 		m.focus = focusFilter
 		return m, m.filterIn.Focus()
 	case key.Matches(msg, km.ReadAll):

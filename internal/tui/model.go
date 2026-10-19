@@ -31,6 +31,7 @@ const (
 	focusList focus = iota
 	focusReply
 	focusFilter
+	focusSearch
 )
 
 type overlay int
@@ -69,6 +70,13 @@ type Model struct {
 	reply          textarea.Model
 	sending        bool
 	loadErr        string
+
+	searchIn  textinput.Model // поиск по истории открытого диалога
+	searchQ   string          // запрос последнего поиска — заголовок и подсветка
+	searchRes []Message       // результаты поиска (свежие первыми)
+	searching bool            // запрос поиска в полёте
+	searchOn  bool            // панель диалога показывает результаты, не историю
+	searchOff int             // строковый офсет окна результатов
 
 	taskIdx     int // выбранная задача в плоском списке
 	taskCard    Task
@@ -110,6 +118,9 @@ func NewModel(api *API, ctx context.Context) Model {
 	ti := textinput.New()
 	ti.Placeholder = "фильтр чатов…"
 	ti.CharLimit = 60
+	si := textinput.New()
+	si.Placeholder = "поиск по истории…"
+	si.CharLimit = 100
 	h := help.New()
 	h.ShortSeparator = " · "
 	h.FullSeparator = "  "
@@ -124,7 +135,7 @@ func NewModel(api *API, ctx context.Context) Model {
 	}
 	return Model{
 		api: api, ctx: ctx,
-		spinner: sp, reply: ta, filterIn: ti, help: h,
+		spinner: sp, reply: ta, filterIn: ti, searchIn: si, help: h,
 		drafts: map[string]string{},
 	}
 }
@@ -297,6 +308,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, read
+
+	case searchMsg:
+		if m.active == nil || m.active.DialogID != msg.dialogID {
+			return m, nil // активный диалог сменился — ответ устарел
+		}
+		m.searching = false
+		if msg.err != nil {
+			m.searchOn = false
+			m.flash = msg.err.Error()
+			m.flashAt = m.api.now()
+			return m, nil
+		}
+		m.searchRes = msg.rows
+		m.searchQ = msg.q
+		m.searchOff = 0
+		return m, nil
 
 	case sentMsg:
 		m.sending = false
@@ -479,6 +506,9 @@ func (m *Model) layout() {
 	if m.focus == focusFilter {
 		m.filterIn.SetWidth(m.listW - 6)
 	}
+	if m.focus == focusSearch {
+		m.searchIn.SetWidth(m.dialW - 6)
+	}
 	m.renderHistory()
 }
 
@@ -579,6 +609,24 @@ func (m Model) historyCmd(dialogID string, lastID int64) tea.Cmd {
 		rows, noMore, err := api.History(ctx, dialogID, lastID)
 		return historyMsg{dialogID: dialogID, rows: rows, noMore: noMore,
 			prepend: lastID > 0, err: err}
+	}
+}
+
+type searchMsg struct {
+	dialogID string
+	q        string
+	rows     []Message
+	err      error
+}
+
+// searchCmd — поиск по истории активного диалога; dialogID фиксируем для
+// гейта гонки (сменился диалог — ответ устарел).
+func (m Model) searchCmd(chatID int64, q string) tea.Cmd {
+	api, ctx := m.api, m.ctx
+	dialogID := m.active.DialogID
+	return func() tea.Msg {
+		rows, err := api.SearchMessages(ctx, chatID, q)
+		return searchMsg{dialogID: dialogID, q: q, rows: rows, err: err}
 	}
 }
 
@@ -925,6 +973,7 @@ func (m *Model) openDialog(idx int) {
 	m.active = &vc[idx]
 	m.cursor = idx
 	m.reply.SetValue(m.drafts[m.active.DialogID])
+	m.resetSearch() // результаты чужого диалога показывать нельзя
 	m.openHistory()
 }
 
@@ -934,9 +983,20 @@ func (m *Model) closeDialog() {
 		m.drafts[m.active.DialogID] = m.reply.Value()
 	}
 	m.active = nil
+	m.resetSearch()
 	if m.taskOpen {
 		m.tab = tabTasks
 	}
+}
+
+// resetSearch — выход из режима поиска: панель возвращается к истории.
+func (m *Model) resetSearch() {
+	m.searchOn = false
+	m.searching = false
+	m.searchRes = nil
+	m.searchQ = ""
+	m.searchOff = 0
+	m.searchIn.SetValue("")
 }
 
 func (m *Model) openHistory() {

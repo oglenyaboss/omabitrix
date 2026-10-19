@@ -21,6 +21,7 @@ type keyMap struct {
 	Help      key.Binding // ?
 	Refresh   key.Binding // R
 	Filter    key.Binding // /
+	Search    key.Binding // / поиск по истории диалога
 	Reply     key.Binding // r
 	Send      key.Binding // enter в ответе
 	Cancel    key.Binding // esc в ответе
@@ -99,6 +100,10 @@ var km = keyMap{
 		key.WithKeys("/"),
 		key.WithHelp("/", "фильтр"),
 	),
+	Search: key.NewBinding(
+		key.WithKeys("/"),
+		key.WithHelp("/", "поиск"),
+	),
 	Reply: key.NewBinding(
 		key.WithKeys("r"),
 		key.WithHelp("r", "ответить"),
@@ -117,11 +122,11 @@ var km = keyMap{
 	),
 	PageUp: key.NewBinding(
 		key.WithKeys("pgup", "b"),
-		key.WithHelp("b", "стр. вверх"),
+		key.WithHelp("b", "стр.↑"),
 	),
 	PageDown: key.NewBinding(
 		key.WithKeys("pgdown", "f"),
-		key.WithHelp("f", "стр. вниз"),
+		key.WithHelp("f", "стр.↓"),
 	),
 	Status: key.NewBinding(
 		key.WithKeys("s"),
@@ -150,8 +155,10 @@ func (m Model) shortHelp() []key.Binding {
 	switch {
 	case m.focus == focusReply:
 		return []key.Binding{km.Send, km.Cancel, km.Help}
+	case m.searchOn:
+		return []key.Binding{km.Up, km.Down, km.Back, km.Help}
 	case m.active != nil:
-		return []key.Binding{km.Reply, km.Older, km.PageUp, km.PageDown, km.Back, km.Help}
+		return []key.Binding{km.Reply, km.Older, km.Search, km.PageUp, km.PageDown, km.Back, km.Help}
 	case m.tab == tabTasks && m.taskOpen:
 		b := []key.Binding{km.Status, km.Deadline}
 		if m.taskCard.ChatID > 0 {
@@ -175,7 +182,7 @@ func (m Model) fullHelp() [][]key.Binding {
 		// вкладки
 		{km.Tab1, km.Tab2, km.Tab3, km.NextTab, km.PrevTab},
 		// чаты
-		{km.Reply, km.Send, km.Cancel, km.Older},
+		{km.Reply, km.Send, km.Cancel, km.Older, km.Search},
 		// задачи
 		{km.Status, km.Deadline, km.TaskChat},
 		// уведы
