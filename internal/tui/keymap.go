@@ -36,18 +36,17 @@ type keyMap struct {
 	Older      key.Binding // H
 	PageUp     key.Binding // pgup, b
 	PageDown   key.Binding // pgdown, f
-	Status     key.Binding // s
+	Status     key.Binding // s — стадии/статус на карточке
 	Deadline   key.Binding // d
-	TaskChat   key.Binding // c
+	TaskChat   key.Binding // c — чат задачи во весь экран
+	FocusChat  key.Binding // i/tab — фокус в чат на экране задачи
 	ColLeft    key.Binding // h, left — колонка влево
 	ColRight   key.Binding // l, right — колонка вправо
-	MoveLeft   key.Binding // H — стадию назад
-	MoveRight  key.Binding // L — стадию вперёд
+	StageMove  key.Binding // H/L — стадию назад/вперёд
 	Role       key.Binding // t — роль доски
 	Project    key.Binding // p — проект доски
 	ReadAll    key.Binding // A
 	Browser    key.Binding // o
-	Comment    key.Binding // r на карточке задачи
 }
 
 var km = keyMap{
@@ -129,7 +128,7 @@ var km = keyMap{
 	),
 	Reply: key.NewBinding(
 		key.WithKeys("r"),
-		key.WithHelp("r", "ответить"),
+		key.WithHelp("r", "написать"),
 	),
 	Select: key.NewBinding(
 		key.WithKeys("v"),
@@ -177,7 +176,7 @@ var km = keyMap{
 	),
 	Status: key.NewBinding(
 		key.WithKeys("s"),
-		key.WithHelp("s", "статус"),
+		key.WithHelp("s", "стадии"),
 	),
 	Deadline: key.NewBinding(
 		key.WithKeys("d"),
@@ -185,23 +184,23 @@ var km = keyMap{
 	),
 	TaskChat: key.NewBinding(
 		key.WithKeys("c"),
-		key.WithHelp("c", "чат задачи"),
+		key.WithHelp("c", "чат во весь экран"),
+	),
+	FocusChat: key.NewBinding(
+		key.WithKeys("i", "tab"),
+		key.WithHelp("i/tab", "в чат"),
 	),
 	ColLeft: key.NewBinding(
 		key.WithKeys("h", "left"),
-		key.WithHelp("h/l", "стадия"),
+		key.WithHelp("h/l", "колонка"),
 	),
 	ColRight: key.NewBinding(
 		key.WithKeys("l", "right"),
-		key.WithHelp("l", "стадия"),
+		key.WithHelp("l", "колонка"),
 	),
-	MoveLeft: key.NewBinding(
-		key.WithKeys("H"),
-		key.WithHelp("H/L", "перенести"),
-	),
-	MoveRight: key.NewBinding(
-		key.WithKeys("L"),
-		key.WithHelp("L", "перенести"),
+	StageMove: key.NewBinding(
+		key.WithKeys("H", "L"),
+		key.WithHelp("H/L", "стадия"),
 	),
 	Role: key.NewBinding(
 		key.WithKeys("t"),
@@ -214,10 +213,6 @@ var km = keyMap{
 	Browser: key.NewBinding(
 		key.WithKeys("o"),
 		key.WithHelp("o", "в браузере"),
-	),
-	Comment: key.NewBinding(
-		key.WithKeys("r"),
-		key.WithHelp("r", "комментарий"),
 	),
 	ReadAll: key.NewBinding(
 		key.WithKeys("A"),
@@ -232,18 +227,15 @@ func (m Model) shortHelp() []key.Binding {
 		return []key.Binding{km.Send, km.Cancel, km.Help}
 	case m.searchOn:
 		return []key.Binding{km.Up, km.Down, km.Back, km.Help}
+	case m.tab == tabTasks && m.taskOpen:
+		// чат задачи открыт справа — подсказки экрана задачи важнее
+		return []key.Binding{km.StageMove, km.Status, km.Deadline, km.Reply, km.TaskChat, km.Browser, km.Quit, km.Help}
 	case m.sel >= 0:
 		return []key.Binding{km.ReplyQuote, km.Edit, km.Delete, km.Like, km.Mention, km.Cancel, km.Help}
 	case m.active != nil:
 		return []key.Binding{km.Reply, km.Select, km.Older, km.Search, km.PageUp, km.PageDown, km.Back, km.Help}
-	case m.tab == tabTasks && m.taskOpen:
-		b := []key.Binding{km.Status, km.Deadline}
-		if m.taskCard.ChatID > 0 {
-			b = append(b, km.TaskChat, km.Comment)
-		}
-		return append(b, km.Browser, km.Quit, km.Help)
 	case m.tab == tabTasks:
-		return []key.Binding{km.ColLeft, km.Down, km.MoveLeft, km.Open, km.Role, km.Project, km.Filter, km.Help}
+		return []key.Binding{km.ColLeft, km.Down, km.StageMove, km.Open, km.Role, km.Project, km.Filter, km.Help}
 	case m.tab == tabNotify:
 		return []key.Binding{km.Open, km.ReadAll, km.Refresh, km.Help}
 	case m.tab == tabHome:
@@ -263,7 +255,7 @@ func (m Model) fullHelp() [][]key.Binding {
 		// чаты (r — ответить, на выделенном — с цитатой)
 		{km.Select, km.ReplyQuote, km.Edit, km.Delete, km.Like, km.Mention, km.Send, km.Cancel, km.Older, km.Search},
 		// задачи
-		{km.NextDue, km.Status, km.Deadline, km.TaskChat, km.Comment, km.ColLeft, km.ColRight, km.MoveLeft, km.MoveRight, km.Role, km.Project},
+		{km.NextDue, km.StageMove, km.Status, km.Deadline, km.TaskChat, km.Reply, km.ColLeft, km.ColRight, km.Role, km.Project},
 		// уведы
 		{km.ReadAll},
 		// общее

@@ -144,14 +144,25 @@ func (m *Model) moveCol(dir int) {
 	m.cursor = base + min(row, len(cols[to].rows)-1)
 }
 
-// moveStage — оптимистичный перенос задачи в соседнюю стадию её проекта:
-// поля стадии меняются сразу, сервер подтверждает (или откатит перечиткой).
-func (m Model) moveStage(dir int) (tea.Model, tea.Cmd) {
+// stageTarget — задача для переноса стадии: открытая карточка (задача из
+// уведов может не быть в списке), иначе задача под курсором.
+func (m Model) stageTarget() (Task, bool) {
+	if m.taskOpen && m.taskCard.ID != 0 {
+		return m.taskCard, true
+	}
 	rows := m.flatTasks()
 	if m.cursor < 0 || m.cursor >= len(rows) {
+		return Task{}, false
+	}
+	return rows[m.cursor].task, true
+}
+
+// moveStage — H/L: соседняя стадия канбана проекта.
+func (m Model) moveStage(dir int) (tea.Model, tea.Cmd) {
+	t, ok := m.stageTarget()
+	if !ok {
 		return m, nil
 	}
-	t := rows[m.cursor].task
 	stages := m.api.StagesOf(t.GroupID)
 	if len(stages) == 0 {
 		m.flash = "у задачи нет канбана проекта"
@@ -165,19 +176,32 @@ func (m Model) moveStage(dir int) (tea.Model, tea.Cmd) {
 			break
 		}
 	}
-	dst := idx + dir
+	return m.setStage(t, idx+dir)
+}
+
+// setStage — оптимистичный перенос задачи в стадию dst (индекс в стадиях
+// проекта): поля стадии меняются сразу, сервер подтверждает (или откатит
+// перечиткой). Правит и открытую карточку.
+func (m Model) setStage(t Task, dst int) (tea.Model, tea.Cmd) {
+	stages := m.api.StagesOf(t.GroupID)
 	if dst < 0 || dst >= len(stages) {
 		return m, nil // край канбана
 	}
 	key := strconv.FormatInt(t.ID, 10)
+	patch := func(x *Task) {
+		x.StageID = stages[dst].ID
+		x.Stage = stages[dst].Title
+		x.StageColor = stages[dst].Color
+		x.StageSort = dst
+	}
 	for i := range m.tasks {
 		if m.tasks[i].ID == t.ID {
-			m.tasks[i].StageID = stages[dst].ID
-			m.tasks[i].Stage = stages[dst].Title
-			m.tasks[i].StageColor = stages[dst].Color
-			m.tasks[i].StageSort = dst
+			patch(&m.tasks[i])
 			break
 		}
+	}
+	if m.taskCard.ID == t.ID {
+		patch(&m.taskCard)
 	}
 	m.restoreCursor(key) // курсор остаётся на той же задаче
 	m.flash = "→ " + stages[dst].Title
@@ -229,12 +253,135 @@ func (m *Model) nextProject() int64 {
 	return 0 // фильтр остался от другой роли — сбрасываем
 }
 
+// boardDrag — перетаскивание карточки мышью между колонками доски.
+type boardDrag struct {
+	taskID         int64
+	fromCol, toCol int
+	wasSel         bool // карточка уже стояла под курсором при нажатии
+}
+
+// boardGeom — раскладка доски: окно видимых колонок, их ширина и высота.
+// Общая точка истины для рендера и хит-теста мыши.
+type boardGeom struct {
+	start, vis, colW, colH int
+	selCol, selRow         int // колонка и строка под курсором (-1 — нет)
+}
+
+func (m Model) boardGeom(cols []boardCol, rows []taskRow) boardGeom {
+	g := boardGeom{selCol: -1, selRow: -1, colH: max(m.bodyH-2, 3)}
+	n := len(cols)
+	if n == 0 {
+		return g
+	}
+	g.colW = (m.width - (n - 1)) / n
+	if g.colW < 28 {
+		g.colW = 28
+	}
+	g.vis = n
+	if n*g.colW+(n-1) > m.width {
+		// все колонки не влезают — окно из влезающих, курсор в кадре
+		g.vis = (m.width + 1) / (g.colW + 1)
+		if g.vis < 1 {
+			g.vis = 1
+		}
+	}
+	if m.cursor >= 0 && m.cursor < len(rows) {
+		g.selCol = rows[m.cursor].col
+		for i := 0; i < m.cursor; i++ {
+			if rows[i].col == g.selCol {
+				g.selRow++
+			}
+		}
+	}
+	if g.selCol >= g.vis {
+		g.start = g.selCol - g.vis + 1
+	}
+	return g
+}
+
+// colCardWindow — окно карточек колонки: сколько влезает и отступ сверху,
+// курсор держится в кадре. Общая для рендера и хит-теста мыши.
+func colCardWindow(c boardCol, sel, avail int) (window, off int) {
+	window = avail / 5
+	off = 0
+	for window > 0 {
+		off = 0
+		if sel >= window {
+			off = sel - window + 1
+		}
+		if off+window > len(c.rows) {
+			off = len(c.rows) - window
+		}
+		if off < 0 {
+			off = 0
+		}
+		used := window * 5
+		if off > 0 {
+			used++
+		}
+		if off+window < len(c.rows) {
+			used++
+		}
+		if used <= avail {
+			break
+		}
+		window--
+	}
+	return window, off
+}
+
+// boardHit — карточка под курсором мыши: колонка и строка в ней.
+// (-1, -1) — мимо доски; row -1 — шапка колонки или пустое место.
+// Y: 0 — вкладки, 1 — чипы, 2 — пустая, 3 — грань рамки, 4 — полоса стадии,
+// 5 — первая карточка (5 строк на карточку, сдвиг на индикатор «ещё»).
+func (m Model) boardHit(x, y int) (int, int) {
+	cols := m.boardColumns()
+	rows := m.flatTasks()
+	g := m.boardGeom(cols, rows)
+	if len(cols) == 0 || y < 5 { // выше карточек: вкладки, чипы, грань, полоса стадии
+		return -1, -1
+	}
+	for i := g.start; i < g.start+g.vis && i < len(cols); i++ {
+		x0 := (i - g.start) * (g.colW + 1)
+		if x < x0 || x >= x0+g.colW {
+			continue
+		}
+		sel := -1
+		if i == g.selCol {
+			sel = g.selRow
+		}
+		window, off := colCardWindow(cols[i], sel, g.colH-3)
+		if window < 1 {
+			return i, -1
+		}
+		top := 5
+		if off > 0 {
+			top = 6
+		}
+		r := (y - top) / 5
+		if r < 0 || r >= window || off+r >= len(cols[i].rows) {
+			return i, -1
+		}
+		return i, off + r
+	}
+	return -1, -1
+}
+
+// boardIndex — плоский индекс строки (колонка, строка в колонке).
+func boardIndex(cols []boardCol, col, row int) int {
+	base := 0
+	for i := 0; i < col; i++ {
+		base += len(cols[i].rows)
+	}
+	return base + row
+}
+
 // viewBoard — канбан-доска вкладки задач: строка чипов ролей/проекта,
 // под ней колонки стадий. Высота — не больше m.bodyH.
 func (m Model) viewBoard() string {
 	cols := m.boardColumns()
 	rows := m.flatTasks()
-	hiddenL, hiddenR := 0, 0
+	g := m.boardGeom(cols, rows)
 	var board string
 	if len(cols) == 0 {
 		// пустая рамка — той же высоты, что и колонки: футер прижат к низу
@@ -242,48 +389,40 @@ func (m Model) viewBoard() string {
 		inner[0] = stDim.Render(" — задач нет — ")
 		board = box("", inner, max(m.width-4, 1), true)
 	} else {
-		n := len(cols)
-		colW := (m.width - (n - 1)) / n
-		if colW < 28 {
-			colW = 28
-		}
-		vis := n
-		if n*colW+(n-1) > m.width {
-			// все колонки не влезают — окно из влезающих, курсор в кадре
-			vis = (m.width + 1) / (colW + 1)
-			if vis < 1 {
-				vis = 1
-			}
-		}
-		selCol, selRow := -1, -1
-		if m.cursor >= 0 && m.cursor < len(rows) {
-			selCol = rows[m.cursor].col
-			for i := 0; i < m.cursor; i++ {
-				if rows[i].col == selCol {
-					selRow++
-				}
-			}
-		}
-		start := 0
-		if selCol >= vis {
-			start = selCol - vis + 1
-		}
-		hiddenL, hiddenR = start, n-start-vis
-		colH := max(m.bodyH-2, 3)
-		blocks := make([]string, 0, vis*2-1)
-		for i := start; i < start+vis && i < n; i++ {
-			if i > start {
+		blocks := make([]string, 0, g.vis*2-1)
+		for i := g.start; i < g.start+g.vis && i < len(cols); i++ {
+			if i > g.start {
 				blocks = append(blocks, " ")
 			}
 			sel := -1
-			if i == selCol {
-				sel = selRow
+			if i == g.selCol {
+				sel = g.selRow
 			}
-			blocks = append(blocks, m.boardColView(cols[i], sel, colW, colH))
+			blocks = append(blocks, m.boardColView(cols[i], sel,
+				m.dragRowIn(cols[i]), m.dragTarget(i), g.colW, g.colH))
 		}
 		board = lipgloss.JoinHorizontal(lipgloss.Top, blocks...)
 	}
-	return m.boardChipsRow(hiddenL, hiddenR) + "\n\n" + board
+	hiddenR := len(cols) - g.start - g.vis
+	return m.boardChipsRow(g.start, hiddenR) + "\n\n" + board
+}
+
+// dragTarget — колонка-цель переноса: акцентная рамка.
+func (m Model) dragTarget(i int) bool {
+	return m.drag != nil && m.drag.toCol == i && m.drag.fromCol != i
+}
+
+// dragRowIn — индекс перетаскиваемой карточки в колонке (-1).
+func (m Model) dragRowIn(c boardCol) int {
+	if m.drag == nil {
+		return -1
+	}
+	for j, r := range c.rows {
+		if r.task.ID == m.drag.taskID {
+			return j
+		}
+	}
+	return -1
 }
 
 // boardChipsRow — строка 1 доски: роли, фильтр проекта, текстовый фильтр;
@@ -347,45 +486,22 @@ func (m Model) boardChipsRow(hiddenL, hiddenR int) string {
 }
 
 // boardColView — колонка доски: рамка со заголовком стадии, полоса цвета
-// стадии, карточки с прокруткой окна (курсор держится в кадре).
-func (m Model) boardColView(c boardCol, sel, colW, colH int) string {
+// стадии, карточки с прокруткой окна (курсор держится в кадре). target —
+// колонка-цель перетаскивания, dragRow — подсвечиваемая перетаскиваемая карточка.
+func (m Model) boardColView(c boardCol, sel, dragRow int, target bool, colW, colH int) string {
 	innerW := max(colW-4, 1)
 	bar := lipgloss.NewStyle().Foreground(stageColor(c.color)).
 		Render(strings.Repeat("▔", innerW))
 	lines := []string{bar}
 	avail := colH - 3 // после полосы стадии
 	// окно карточек: сколько влезает, курсор в кадре, индикаторы «ещё»
-	cap := avail / 5
-	off := 0
-	for cap > 0 {
-		off = 0
-		if sel >= cap {
-			off = sel - cap + 1
-		}
-		if off+cap > len(c.rows) {
-			off = len(c.rows) - cap
-		}
-		if off < 0 {
-			off = 0
-		}
-		used := cap * 5
-		if off > 0 {
-			used++
-		}
-		if off+cap < len(c.rows) {
-			used++
-		}
-		if used <= avail {
-			break
-		}
-		cap--
-	}
+	cap, off := colCardWindow(c, sel, avail)
 	if cap > 0 {
 		if off > 0 {
 			lines = append(lines, stDim.Render(fmt.Sprintf("↑ ещё %d", off)))
 		}
 		for i := off; i < off+cap && i < len(c.rows); i++ {
-			lines = append(lines, m.boardCard(c.rows[i], i == sel, innerW)...)
+			lines = append(lines, m.boardCard(c.rows[i], i == sel || i == dragRow, innerW)...)
 		}
 		if off+cap < len(c.rows) {
 			lines = append(lines, stDim.Render(fmt.Sprintf("ещё %d", len(c.rows)-off-cap)))
@@ -400,7 +516,7 @@ func (m Model) boardColView(c boardCol, sel, colW, colH int) string {
 	}
 	title := lipgloss.NewStyle().Foreground(stageColor(c.color)).Render("●") + " " +
 		stTitle.Render(c.title) + " " + stDim.Render(fmt.Sprint(len(c.rows)))
-	return box(title, lines, innerW, sel >= 0)
+	return box(title, lines, innerW, sel >= 0 || target)
 }
 
 // boardCard — карточка задачи: 5 строк, проект врезан в верхнюю грань,

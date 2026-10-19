@@ -374,6 +374,10 @@ func (a *API) Task(ctx context.Context, id int64) (Task, error) {
 	return TaskFrom(raw), nil
 }
 
+// Annotate — проект и стадия карточки из кэша меты: задача, открытая не с
+// доски (из уведов), в loadMeta не участвует. Нет меты в кэше — без стадии.
+func (a *API) Annotate(t *Task) { a.annotate(t) }
+
 // SetStatus — смена статуса (живьём проверено: 2→3→2 на 12475).
 func (a *API) SetStatus(ctx context.Context, id int64, status string) error {
 	err := a.C.Call(ctx, "tasks.task.update", map[string]any{

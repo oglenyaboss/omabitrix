@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -95,6 +94,16 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.focus = focusList
 			m.layout()
 			return m, nil
+		case "pgup":
+			if m.taskOpen {
+				m.vp.PageUp() // скролл истории, пока фокус в чате задачи
+				return m, nil
+			}
+		case "pgdown":
+			if m.taskOpen {
+				m.vp.PageDown()
+				return m, nil
+			}
 		}
 		var cmd tea.Cmd
 		m.reply, cmd = m.reply.Update(msg)
@@ -230,6 +239,33 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// канбан-доска задач: колонки, перенос стадии, роль/проект; до глобальных —
 	// чтобы свои h/l/H/L/t/p не столкнулись с чатами (H — «раньше», l — лайк)
 	if m.tab == tabTasks && m.focus == focusList && m.overlay == ovNone {
+		if m.taskOpen {
+			// экран задачи: j/k/pgup/pgdn скроллят описание, i/tab — фокус в чат
+			if key.Matches(msg, km.FocusChat) && m.twoPane() {
+				if m.active != nil {
+					m.replyActive()
+					return m, m.reply.Focus()
+				}
+				return m, nil
+			}
+			switch {
+			case key.Matches(msg, km.Down):
+				m.descOff++
+				return m, nil
+			case key.Matches(msg, km.Up):
+				if m.descOff > 0 {
+					m.descOff--
+				}
+				return m, nil
+			case key.Matches(msg, km.PageDown), key.Matches(msg, km.PageUp):
+				step := m.cardPage()
+				if msg.String() == "pgup" || msg.String() == "b" {
+					step = -step
+				}
+				m.descOff = max(m.descOff+step, 0)
+				return m, nil
+			}
+		}
 		switch {
 		case key.Matches(msg, km.ColLeft):
 			m.moveCol(-1)
@@ -251,10 +287,12 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.cursor--
 			}
 			return m, m.followCard()
-		case key.Matches(msg, km.MoveLeft):
-			return m.moveStage(-1)
-		case key.Matches(msg, km.MoveRight):
-			return m.moveStage(1)
+		case key.Matches(msg, km.StageMove):
+			dir := 1
+			if msg.String() == "H" {
+				dir = -1
+			}
+			return m.moveStage(dir)
 		case key.Matches(msg, km.Role):
 			switch m.boardRole() {
 			case "do":
@@ -284,6 +322,11 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.tab == tabTasks && m.taskOpen {
 			m.taskOpen = false
 			m.cardReq = 0
+			// чат задачи закрывается вместе с карточкой (черновик остаётся)
+			if m.active != nil && m.active.DialogID == taskChatDialog(m.taskCard.ChatID) {
+				m.closeDialog()
+			}
+			m.layout()
 			return m, nil
 		}
 		if key.Matches(msg, km.Quit) {
@@ -320,6 +363,16 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.reply.Focus()
 		}
 		if m.tab == tabTasks && m.taskOpen {
+			if m.twoPane() {
+				// чат уже открыт справа — только фокус в поле
+				if m.active == nil {
+					m.flash = "у задачи нет чата"
+					m.flashAt = m.api.now()
+					return m, nil
+				}
+				m.replyActive()
+				return m, m.reply.Focus()
+			}
 			// комментарий к задаче — это сообщение в её чат
 			cmd := m.openTaskChat()
 			if m.active == nil {
@@ -430,7 +483,7 @@ func (m *Model) openTaskChat() tea.Cmd {
 		m.flashAt = m.api.now()
 		return nil
 	}
-	id := "chat" + fmt.Sprint(m.taskCard.ChatID)
+	id := taskChatDialog(m.taskCard.ChatID)
 	m.openChatByDialog(id)
 	m.active.Title = m.taskCard.Title
 	return m.historyCmd(id, 0)
@@ -518,6 +571,7 @@ func (m *Model) switchTab(t tab) {
 	m.filter = ""
 	m.filterIn.SetValue("")
 	m.clampCursors()
+	m.layout()
 }
 
 func (m Model) enterKey() (tea.Model, tea.Cmd) {
@@ -589,8 +643,8 @@ func statusOptions(current string) []statusOption {
 }
 
 func (m Model) statusMove(up bool) (tea.Model, tea.Cmd) {
-	opts := statusOptions(m.taskCard.Status)
-	if m.statusIdx <= 0 && up || m.statusIdx >= len(opts)-1 && !up {
+	n := m.menuLen()
+	if m.statusIdx <= 0 && up || m.statusIdx >= n-1 && !up {
 		return m, nil
 	}
 	if up {
@@ -601,7 +655,29 @@ func (m Model) statusMove(up bool) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// menuLen — пункты меню ovStatus: стадии проекта, если есть канбан,
+// иначе статусы.
+func (m Model) menuLen() int {
+	if st := m.api.StagesOf(m.taskCard.GroupID); len(st) > 0 {
+		return len(st)
+	}
+	return len(statusOptions(m.taskCard.Status))
+}
+
+// cardPage — страница прокрутки описания в карточке.
+func (m Model) cardPage() int { return max(m.cardDescMax()-1, 1) }
+
 func (m Model) statusConfirm() (tea.Model, tea.Cmd) {
+	if st := m.api.StagesOf(m.taskCard.GroupID); len(st) > 0 {
+		if m.statusIdx < 0 || m.statusIdx >= len(st) {
+			return m, nil
+		}
+		m.overlay = ovNone
+		if st[m.statusIdx].ID == m.taskCard.StageID {
+			return m, nil // уже в этой стадии
+		}
+		return m.setStage(m.taskCard, m.statusIdx)
+	}
 	opts := statusOptions(m.taskCard.Status)
 	if m.statusIdx < 0 || m.statusIdx >= len(opts) {
 		return m, nil

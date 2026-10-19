@@ -98,6 +98,8 @@ type Model struct {
 	followSeq   int   // тик «карточка за курсором»: живёт только последний
 	statusIdx   int
 	deadlineIdx int
+	descOff     int        // окно прокрутки описания в карточке
+	drag        *boardDrag // перетаскивание карточки мышью на доске
 
 	drafts map[string]string // черновики по диалогам
 
@@ -452,6 +454,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.loadErr = "стадия не изменена: " + msg.err.Error()
 		}
+		if m.taskOpen {
+			return m, tea.Batch(m.loadCmd("tasks"), m.loadTaskCardCmd(m.taskCard.ID))
+		}
 		return m, m.loadCmd("tasks")
 
 	case actionMsg:
@@ -486,10 +491,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.loadErr = msg.err.Error()
 			return m, nil
 		}
+		if msg.task.ID != m.taskCard.ID {
+			m.descOff = 0 // новая задача — описание с начала
+		}
 		m.taskCard = msg.task
 		// tasks.task.get поля канбана не отдаёт — переносим из списка
+		found := false
 		for i := range m.tasks {
 			if m.tasks[i].ID == msg.task.ID {
+				found = true
 				m.taskCard.Role = m.tasks[i].Role
 				m.taskCard.GroupID = m.tasks[i].GroupID
 				m.taskCard.Project = m.tasks[i].Project
@@ -500,10 +510,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 		}
+		if !found && m.taskCard.GroupID > 0 {
+			// карточка не с доски (из уведов): проект и стадия из кэша меты
+			m.api.Annotate(&m.taskCard)
+		}
 		m.taskOpen = true
 		m.tab = tabTasks
 		m.cursor = m.taskIdx
-		return m, nil
+		m.layout()
+		// двухпанельный экран: чат задачи открывается сразу, без смены вкладки
+		var cmd tea.Cmd
+		if id := taskChatDialog(m.taskCard.ChatID); m.taskCard.ChatID > 0 && m.twoPane() &&
+			(m.active == nil || m.active.DialogID != id) {
+			m.openTaskChatInline(id)
+			m.active.Title = "чат задачи"
+			cmd = m.historyCmd(id, 0)
+		}
+		return m, cmd
 
 	case cardFollowMsg:
 		// карточка догоняет курсор: живёт только последний тик и только
@@ -520,6 +543,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseClickMsg:
 		return m.mouseClick(msg)
+
+	case tea.MouseMotionMsg:
+		return m.mouseMotion(msg)
+
+	case tea.MouseReleaseMsg:
+		return m.mouseRelease(msg)
 
 	case tea.MouseWheelMsg:
 		return m.mouseWheel(msg)
@@ -577,11 +606,18 @@ func (m *Model) layout() {
 	if m.listW < 12 {
 		m.listW = 12
 	}
-	m.dialW = m.width - (m.listW + 4) - 2 - 4
+	if m.taskOpen && m.width >= 100 {
+		// экран задачи: слева карточка, справа чат; между ними 1 пробел
+		leftW := (m.width - 1) * 11 / 20
+		m.cardW = leftW - 4
+		m.dialW = m.width - leftW - 1 - 4
+	} else {
+		m.dialW = m.width - (m.listW + 4) - 2 - 4
+		m.cardW = m.width - 4 // вкладка задач: карточка на всю ширину доски
+	}
 	if m.dialW < 20 {
 		m.dialW = 20
 	}
-	m.cardW = m.width - 4 // вкладка задач: карточка на всю ширину доски
 	if m.cardW < 20 {
 		m.cardW = 20
 	}
@@ -935,6 +971,64 @@ func (m Model) mouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// mouseMotion — движение с зажатой кнопкой: запоминаем колонку-цель переноса.
+func (m Model) mouseMotion(msg tea.MouseMotionMsg) (tea.Model, tea.Cmd) {
+	if m.drag == nil || m.taskOpen || m.tab != tabTasks || m.overlay != ovNone {
+		return m, nil
+	}
+	if col, _ := m.boardHit(msg.X, msg.Y); col >= 0 {
+		m.drag.toCol = col
+	}
+	return m, nil
+}
+
+// mouseRelease — бросили карточку: перенос в стадию колонки-цели.
+// Отпускание над той же колонкой — обычный клик (повторный по выбранной
+// карточке открывает её).
+func (m Model) mouseRelease(msg tea.MouseReleaseMsg) (tea.Model, tea.Cmd) {
+	d := m.drag
+	m.drag = nil
+	if d == nil || m.taskOpen || m.tab != tabTasks || m.overlay != ovNone {
+		return m, nil
+	}
+	col, row := m.boardHit(msg.X, msg.Y)
+	if col < 0 {
+		return m, nil
+	}
+	if col == d.fromCol {
+		if d.wasSel && row >= 0 {
+			cols := m.boardColumns()
+			if col < len(cols) && row < len(cols[col].rows) &&
+				cols[col].rows[row].task.ID == d.taskID {
+				return m.enterKey()
+			}
+		}
+		return m, nil
+	}
+	cols := m.boardColumns()
+	if col >= len(cols) {
+		return m, nil
+	}
+	var t Task
+	for _, x := range m.tasks {
+		if x.ID == d.taskID {
+			t = x
+			break
+		}
+	}
+	if t.ID == 0 {
+		return m, nil
+	}
+	for i, s := range m.api.StagesOf(t.GroupID) {
+		if s.Title == cols[col].title {
+			return m.setStage(t, i)
+		}
+	}
+	m.flash = "в проекте нет стадии " + cols[col].title
+	m.flashAt = m.api.now()
+	return m, nil
+}
+
 // mouseLeft: геометрия строк синхронна с chatWindow/notifyWindow.
 func (m Model) mouseLeft(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 	switch m.tab {
@@ -956,7 +1050,24 @@ func (m Model) mouseLeft(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case tabTasks:
-		// доска рисуется колонками, мышь юзеру не нужна
+		if m.taskOpen {
+			return m, nil
+		}
+		// доска: клик по карточке — курсор, повторный по выбранной — открыть;
+		// зажатие начинает перетаскивание
+		col, row := m.boardHit(msg.X, msg.Y)
+		if col < 0 || row < 0 {
+			return m, nil
+		}
+		cols := m.boardColumns()
+		rows := m.flatTasks()
+		idx := boardIndex(cols, col, row)
+		if idx < 0 || idx >= len(rows) {
+			return m, nil
+		}
+		wasSel := m.cursor == idx
+		m.cursor = idx
+		m.drag = &boardDrag{taskID: rows[idx].task.ID, fromCol: col, toCol: col, wasSel: wasSel}
 		return m, nil
 	case tabNotify:
 		vn := m.visibleNotify()
@@ -1056,6 +1167,32 @@ func (m Model) cardMatchesCursor() bool {
 }
 
 // openChatByDialog — вход из --chat (тосты/бар) и из карточки задачи («c»).
+// twoPane — экран задачи с чатом справа: места достаточно.
+func (m Model) twoPane() bool { return m.taskOpen && m.width >= 100 }
+
+// taskChatDialog — DialogID чата задачи по ChatID.
+func taskChatDialog(chatID int64) string {
+	return "chat" + strconv.FormatInt(chatID, 10)
+}
+
+// openTaskChatInline — чат задачи без смены вкладки: панель справа на
+// экране задачи. Вкладку и курсор списка не трогает.
+func (m *Model) openTaskChatInline(id string) {
+	for i := range m.chats {
+		if m.chats[i].DialogID == id {
+			m.active = &m.chats[i]
+			m.reply.SetValue(m.drafts[id])
+			m.resetSearch()
+			m.openHistory()
+			return
+		}
+	}
+	// чат задачи не в списке (отфильтрован) — synthetic
+	m.active = &Chat{DialogID: id, Title: "чат " + id}
+	m.reply.SetValue(m.drafts[id])
+	m.openHistory()
+}
+
 func (m *Model) openChatByDialog(id string) {
 	for i := range m.chats {
 		if m.chats[i].DialogID == id {
