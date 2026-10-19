@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -15,6 +16,22 @@ import (
 var taskChatPrefixes = []string{"SRV.", "ADS.", "CLS."}
 
 var bbRe = regexp.MustCompile(`\[[^\]]*\]`)
+
+// mentionRe — упоминание в тексте: [USER=75]Имя[/USER], [user=all]Все[/user].
+var mentionRe = regexp.MustCompile(`(?i)\[USER=(\d+|all)\](.*?)\[/USER\]`)
+
+// applyMentions: упоминания → @Имя (до StripBB); true — упомянут я (мой id или all).
+func applyMentions(text string, myID int64) (string, bool) {
+	me := false
+	out := mentionRe.ReplaceAllStringFunc(text, func(m string) string {
+		g := mentionRe.FindStringSubmatch(m)
+		if strings.EqualFold(g[1], "all") || g[1] == strconv.FormatInt(myID, 10) {
+			me = true
+		}
+		return "@" + g[2]
+	})
+	return out, me
+}
 
 // StripBB убирает BB-коды ([b]текст[/b], [USER=1]Имя[/USER]) и тримит.
 func StripBB(s string) string {
@@ -68,6 +85,7 @@ type rawRecentItem struct {
 	// у битых — null. dialogId дублирует не всегда (живой портал).
 	ID      FlexString `json:"id"`
 	Dial    FlexString `json:"dialogId"`
+	ChatID  FlexInt    `json:"chat_id"`
 	Title   string     `json:"title"`
 	Counter int        `json:"counter"`
 	Message *struct {
@@ -128,7 +146,7 @@ func ChatsFrom(raw []byte, now time.Time) []Chat {
 		if dlg == "" || dlg == "null" {
 			continue // битый элемент портала
 		}
-		c := Chat{DialogID: dlg, Title: it.Title, Counter: it.Counter}
+		c := Chat{DialogID: dlg, ChatID: int64(it.ChatID), Title: it.Title, Counter: it.Counter}
 		if c.Title == "" {
 			c.Title = dlg
 		}
@@ -154,13 +172,50 @@ func ChatsFrom(raw []byte, now time.Time) []Chat {
 }
 
 type rawMsg struct {
-	ID       FlexInt `json:"id"`
-	Date     string  `json:"date"`
-	AuthorID FlexInt `json:"author_id"`
-	Text     string  `json:"text"`
-	Params   *struct {
-		ISDELETED string `json:"IS_DELETED"`
-	} `json:"params"`
+	ID       FlexInt         `json:"id"`
+	Date     string          `json:"date"`
+	AuthorID FlexInt         `json:"author_id"`
+	Text     string          `json:"text"`
+	Params   json.RawMessage `json:"params"`
+}
+
+// msgParams — интересующие поля params сообщения.
+type msgParams struct {
+	IsDeleted bool
+	ReplyID   int64
+	Like      []int64
+}
+
+// parseMsgParams: params бывает объектом, а бывает пустым массивом []
+// (живой факт) — тогда пустой результат, остальные поля не страдают.
+func parseMsgParams(raw json.RawMessage) msgParams {
+	var p msgParams
+	if len(raw) == 0 || raw[0] != '{' {
+		return p
+	}
+	var wire struct {
+		IsDeleted string    `json:"IS_DELETED"`
+		ReplyID   FlexInt   `json:"REPLY_ID"`
+		Like      []FlexInt `json:"LIKE"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		return msgParams{}
+	}
+	p.IsDeleted = wire.IsDeleted == "Y"
+	p.ReplyID = int64(wire.ReplyID)
+	for _, v := range wire.Like {
+		p.Like = append(p.Like, int64(v))
+	}
+	return p
+}
+
+func likedByMe(likes []int64, myID int64) bool {
+	for _, id := range likes {
+		if id == myID {
+			return true
+		}
+	}
+	return false
 }
 
 type rawDialogResult struct {
@@ -185,25 +240,77 @@ func MessagesFrom(raw []byte, myID int64, now time.Time) []Message {
 	now = now.Local()
 	out := make([]Message, 0, len(res.Messages))
 	for _, m := range res.Messages {
-		if m.Params != nil && m.Params.ISDELETED == "Y" {
+		ps := parseMsgParams(m.Params)
+		if ps.IsDeleted {
 			continue
 		}
+		text, mentionsMe := applyMentions(m.Text, myID)
 		day, label := DayInfo(m.Date, now)
 		out = append(out, Message{
-			ID:       int64(m.ID),
-			AuthorID: int64(m.AuthorID),
-			Name:     users[int64(m.AuthorID)],
-			Text:     StripBB(m.Text),
-			Time:     FmtTime(m.Date, now),
-			DayKey:   day,
-			DayLabel: label,
-			Mine:     int64(m.AuthorID) == myID,
-			System:   int64(m.AuthorID) == 0,
+			ID:         int64(m.ID),
+			AuthorID:   int64(m.AuthorID),
+			Name:       users[int64(m.AuthorID)],
+			Text:       StripBB(text),
+			Time:       FmtTime(m.Date, now),
+			DayKey:     day,
+			DayLabel:   label,
+			Mine:       int64(m.AuthorID) == myID,
+			System:     int64(m.AuthorID) == 0,
+			ReplyID:    ps.ReplyID,
+			Likes:      len(ps.Like),
+			LikedByMe:  likedByMe(ps.Like, myID),
+			MentionsMe: mentionsMe,
 		})
 	}
 	// портал отдаёт от старых к свежим; переворачиваем
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]
+	}
+	return out
+}
+
+type rawSearchMsg struct {
+	ID       FlexInt         `json:"id"`
+	AuthorID FlexInt         `json:"authorId"` // у search — camelCase
+	Date     string          `json:"date"`
+	Text     string          `json:"text"`
+	Params   json.RawMessage `json:"params"`
+}
+
+type rawSearchResult struct {
+	Messages []rawSearchMsg `json:"messages"`
+	Users    []rawUserV2    `json:"users"`
+}
+
+// SearchFrom — im.dialog.messages.search → найденные, как пришли (свежие первыми).
+func SearchFrom(raw []byte, myID int64, now time.Time) []Message {
+	var res rawSearchResult
+	_ = json.Unmarshal(raw, &res)
+	users := map[int64]string{}
+	for _, u := range res.Users {
+		users[int64(u.ID)] = u.Name
+	}
+	now = now.Local()
+	out := make([]Message, 0, len(res.Messages))
+	for _, m := range res.Messages {
+		ps := parseMsgParams(m.Params)
+		text, mentionsMe := applyMentions(m.Text, myID)
+		day, label := DayInfo(m.Date, now)
+		out = append(out, Message{
+			ID:         int64(m.ID),
+			AuthorID:   int64(m.AuthorID),
+			Name:       users[int64(m.AuthorID)],
+			Text:       StripBB(text),
+			Time:       FmtTime(m.Date, now),
+			DayKey:     day,
+			DayLabel:   label,
+			Mine:       int64(m.AuthorID) == myID,
+			System:     int64(m.AuthorID) == 0,
+			ReplyID:    ps.ReplyID,
+			Likes:      len(ps.Like),
+			LikedByMe:  likedByMe(ps.Like, myID),
+			MentionsMe: mentionsMe,
+		})
 	}
 	return out
 }

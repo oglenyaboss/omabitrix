@@ -4,6 +4,7 @@ package tui
 // Chat — элемент im.recent.list.
 type Chat struct {
 	DialogID string
+	ChatID   int64 // числовой id чата (поиск, реакции); у личных диалогов может быть 0
 	Title    string
 	Counter  int
 	Preview  string
@@ -14,15 +15,19 @@ type Chat struct {
 
 // Message — строка истории диалога (регулярная или системная).
 type Message struct {
-	ID       int64
-	AuthorID int64 // 0 = системное; ключ цвета автора и группировки
-	Name     string
-	Text     string
-	Time     string
-	DayKey   string
-	DayLabel string
-	Mine     bool
-	System   bool
+	ID         int64
+	AuthorID   int64 // 0 = системное; ключ цвета автора и группировки
+	Name       string
+	Text       string
+	Time       string
+	DayKey     string
+	DayLabel   string
+	Mine       bool
+	System     bool
+	ReplyID    int64 // ответ-цитата: params.REPLY_ID (не задокументировано — терпимый парс)
+	Likes      int   // params.LIKE — сколько лайков
+	LikedByMe  bool  // мой id в params.LIKE
+	MentionsMe bool  // [USER=мой_id] или [USER=all] в тексте
 }
 
 // NotifyItem — системное уведомление im.notify.get.

@@ -214,3 +214,84 @@ func TestChatsFromNumericID(t *testing.T) {
 		}
 	}
 }
+
+// params: живой портал шлёт и объект с REPLY_ID/LIKE, и пустой массив [].
+func TestMessagesFromParams(t *testing.T) {
+	raw := []byte(`{"messages":[
+		{"id":9,"date":"2026-10-19T08:45:00+03:00","author_id":19,"text":"ответ",
+		 "params":{"REPLY_ID":"5","LIKE":[75,3]}},
+		{"id":8,"date":"2026-10-19T08:40:00+03:00","author_id":19,"text":"просто",
+		 "params":[]}
+	],"users":[{"id":19,"name":"Петров"}]}`)
+	rows := MessagesFrom(raw, 75, now)
+	if len(rows) != 2 {
+		t.Fatalf("len = %d (params [] не должен ломать сообщение)", len(rows))
+	}
+	// порядок после реверса: id 8 сверху
+	if rows[0].ID != 8 {
+		t.Fatalf("порядок: %+v", rows)
+	}
+	if rows[0].ReplyID != 0 || rows[0].Likes != 0 || rows[0].LikedByMe {
+		t.Errorf("пустой params: %+v", rows[0])
+	}
+	if rows[1].ReplyID != 5 || rows[1].Likes != 2 || !rows[1].LikedByMe {
+		t.Errorf("REPLY_ID/LIKE (мой id 75): %+v", rows[1])
+	}
+}
+
+func TestMentions(t *testing.T) {
+	raw := []byte(`{"messages":[
+		{"id":3,"date":"2026-10-19T08:45:00+03:00","author_id":19,
+		 "text":"[USER=75]Лёня[/USER] привет"},
+		{"id":2,"date":"2026-10-19T08:40:00+03:00","author_id":19,
+		 "text":"[user=all]Все[/user] зашли"}
+	],"users":[{"id":19,"name":"Петров"}]}`)
+	rows := MessagesFrom(raw, 75, now)
+	// после реверса: id 2 (all) сверху, id 3 (личное) ниже
+	if rows[1].Text != "@Лёня привет" || !rows[1].MentionsMe {
+		t.Errorf("личное упоминание: %+v", rows[1])
+	}
+	if rows[0].Text != "@Все зашли" || !rows[0].MentionsMe {
+		t.Errorf("all: %+v", rows[0])
+	}
+	// чужой id — не я
+	raw = []byte(`{"messages":[{"id":1,"date":"2026-10-19T08:35:00+03:00","author_id":19,"text":"[USER=19]Петров[/USER] смотри"}],"users":[]}`)
+	if m := MessagesFrom(raw, 75, now)[0]; m.MentionsMe || m.Text != "@Петров смотри" {
+		t.Errorf("чужое упоминание: %+v", m)
+	}
+}
+
+func TestChatsFromChatID(t *testing.T) {
+	raw := []byte(`{"items":[
+		{"id":"chat10839","chat_id":10839,"title":"SRV. задача","counter":0},
+		{"id":"19","title":"Петров","counter":0}
+	]}`)
+	chats := ChatsFrom(raw, now)
+	if len(chats) != 2 || chats[0].ChatID != 10839 {
+		t.Fatalf("chat_id группового: %+v", chats)
+	}
+	if chats[1].ChatID != 0 {
+		t.Errorf("у личного без chat_id: %d", chats[1].ChatID)
+	}
+}
+
+func TestSearchFrom(t *testing.T) {
+	raw := []byte(`{"messages":[
+		{"id":11,"authorId":19,"date":"2026-10-19T08:45:00+03:00","text":"[b]нашёл[/b] [USER=75]Лёня[/USER]","params":[]},
+		{"id":10,"authorId":75,"date":"2026-10-19T08:30:00+03:00","text":"старее","params":{"LIKE":[19,3]}}
+	],"users":[{"id":19,"name":"Петров"},{"id":75,"name":"Лёня"}]}`)
+	rows := SearchFrom(raw, 75, now)
+	if len(rows) != 2 {
+		t.Fatalf("len = %d", len(rows))
+	}
+	// порядок как пришёл: свежие первыми
+	if rows[0].ID != 11 || rows[0].Name != "Петров" {
+		t.Errorf("порядок и имя: %+v", rows[0])
+	}
+	if rows[0].Text != "нашёл @Лёня" || !rows[0].MentionsMe {
+		t.Errorf("текст/упоминание: %+v", rows[0])
+	}
+	if rows[1].Likes != 2 || rows[1].LikedByMe || !rows[1].Mine {
+		t.Errorf("лайки/mine: %+v", rows[1])
+	}
+}

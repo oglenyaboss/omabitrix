@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"time"
 
 	"omabitrix/internal/b24"
@@ -63,13 +65,16 @@ func (a *API) History(ctx context.Context, dialogID string, lastID int64) (rows 
 	return rows, len(rows) == 0, nil
 }
 
-// Send отправляет сообщение и сразу читает диалог (optimistic).
-// Портал шлёт result то числом, то {"message_id": N} (живая проверка) — парсим оба.
-func (a *API) Send(ctx context.Context, dialogID, text string) (int64, error) {
+// Send отправляет сообщение (replyID>0 — ответ-цитата) и сразу читает диалог
+// (optimistic). Портал шлёт result то числом, то {"message_id": N} (живая
+// проверка) — парсим оба.
+func (a *API) Send(ctx context.Context, dialogID, text string, replyID int64) (int64, error) {
+	params := map[string]any{"DIALOG_ID": dialogID, "MESSAGE": text}
+	if replyID > 0 {
+		params["REPLY_ID"] = replyID
+	}
 	var raw json.RawMessage
-	if err := a.C.Call(ctx, "im.message.add", map[string]any{
-		"DIALOG_ID": dialogID, "MESSAGE": text,
-	}, &raw); err != nil {
+	if err := a.C.Call(ctx, "im.message.add", params, &raw); err != nil {
 		return 0, err
 	}
 	var id FlexInt
@@ -85,6 +90,60 @@ func (a *API) Send(ctx context.Context, dialogID, text string) (int64, error) {
 	_ = a.ReadDialog(ctx, dialogID, int64(id))
 	a.chatsAt = time.Time{} // сброс кэша списка: превью/счётчик обновятся
 	return int64(id), nil
+}
+
+// UpdateMessage правит текст. ПУСТОЙ MESSAGE у портала удалил бы
+// сообщение — ловим на своей стороне и запрос не шлём.
+func (a *API) UpdateMessage(ctx context.Context, id int64, text string) error {
+	if strings.TrimSpace(text) == "" {
+		return errors.New("пустой текст удалил бы сообщение")
+	}
+	return a.C.Call(ctx, "im.message.update", map[string]any{
+		"MESSAGE_ID": id, "MESSAGE": text,
+	}, nil)
+}
+
+// DeleteMessage удаляет сообщение (автор или админ общего чата).
+func (a *API) DeleteMessage(ctx context.Context, id int64) error {
+	return a.C.Call(ctx, "im.message.delete", map[string]any{
+		"MESSAGE_ID": id,
+	}, nil)
+}
+
+// LikeMessage ставит/снимает «нравится». WITHOUT_CHANGES — реакция уже
+// в нужном состоянии, это не ошибка.
+func (a *API) LikeMessage(ctx context.Context, id int64, like bool) error {
+	action := "minus"
+	if like {
+		action = "plus"
+	}
+	err := a.C.Call(ctx, "im.message.like", map[string]any{
+		"MESSAGE_ID": id, "ACTION": action,
+	}, nil)
+	var berr *b24.Error
+	if errors.As(err, &berr) && berr.Code == "WITHOUT_CHANGES" {
+		return nil
+	}
+	return err
+}
+
+// SearchMessages — поиск по истории чата. Порталу нужен числовой CHAT_ID
+// (не DIALOG_ID), строка от 3 символов, LIMIT до 200 (берём 50).
+func (a *API) SearchMessages(ctx context.Context, chatID int64, query string) ([]Message, error) {
+	if chatID <= 0 {
+		return nil, errors.New("поиск недоступен для этого диалога")
+	}
+	q := strings.TrimSpace(query)
+	if len([]rune(q)) < 3 {
+		return nil, errors.New("минимум 3 символа")
+	}
+	var raw json.RawMessage
+	if err := a.C.Call(ctx, "im.dialog.messages.search", map[string]any{
+		"CHAT_ID": chatID, "SEARCH_MESSAGE": q, "LIMIT": 50,
+	}, &raw); err != nil {
+		return nil, err
+	}
+	return SearchFrom(raw, a.My, a.now()), nil
 }
 
 // ReadDialog — прочитать диалог до lastID включительно (MESSAGE_ID обязателен).

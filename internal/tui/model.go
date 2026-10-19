@@ -601,7 +601,7 @@ func (m Model) sendCmd(text string) tea.Cmd {
 	api, ctx := m.api, m.ctx
 	dialogID := m.active.DialogID
 	return func() tea.Msg {
-		id, err := api.Send(ctx, dialogID, text)
+		id, err := api.Send(ctx, dialogID, text, 0)
 		return sentMsg{dialogID: dialogID, id: id, text: text, err: err}
 	}
 }

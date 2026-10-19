@@ -145,3 +145,115 @@ func TestDeadlineOptions(t *testing.T) {
 		t.Errorf("+неделя: %s want %s", got, want)
 	}
 }
+
+// Send: replyID>0 → REPLY_ID в im.message.add, replyID=0 → без него.
+func TestSendMessageReply(t *testing.T) {
+	var mu sync.Mutex
+	var params map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		if strings.HasSuffix(r.URL.Path, "/im.message.add.json") {
+			params = nil
+			json.NewDecoder(r.Body).Decode(&params)
+		}
+		mu.Unlock()
+		fmt.Fprint(w, `{"result":42}`)
+	}))
+	defer srv.Close()
+
+	a := &API{C: b24.New(srv.URL), My: 75}
+	id, err := a.Send(context.Background(), "chat10839", "привет", 9)
+	if err != nil || id != 42 {
+		t.Fatalf("Send: id=%d err=%v", id, err)
+	}
+	mu.Lock()
+	if rid, _ := params["REPLY_ID"].(float64); rid != 9 {
+		t.Errorf("REPLY_ID: %v", params["REPLY_ID"])
+	}
+	mu.Unlock()
+
+	if _, err := a.Send(context.Background(), "chat10839", "ещё", 0); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if _, ok := params["REPLY_ID"]; ok {
+		t.Errorf("REPLY_ID не должен отправляться: %v", params)
+	}
+}
+
+// UpdateMessage: пустой текст — ошибка без запроса (портал удалил бы сообщение).
+func TestUpdateMessageEmpty(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		fmt.Fprint(w, `{"result":true}`)
+	}))
+	defer srv.Close()
+
+	a := &API{C: b24.New(srv.URL)}
+	if err := a.UpdateMessage(context.Background(), 42, "   "); err == nil {
+		t.Fatal("ожидалась ошибка на пустой текст")
+	}
+	if called {
+		t.Error("запрос не должен был уйти")
+	}
+}
+
+// LikeMessage: WITHOUT_CHANGES (реакция уже в нужном состоянии) — не ошибка.
+func TestLikeMessageWithoutChanges(t *testing.T) {
+	var params map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&params)
+		fmt.Fprint(w, `{"error":"WITHOUT_CHANGES","error_description":"состояние реакции уже было таким же"}`)
+	}))
+	defer srv.Close()
+
+	a := &API{C: b24.New(srv.URL)}
+	if err := a.LikeMessage(context.Background(), 42, true); err != nil {
+		t.Fatalf("WITHOUT_CHANGES должен глотаться: %v", err)
+	}
+	if params["ACTION"] != "plus" {
+		t.Errorf("ACTION: %v", params["ACTION"])
+	}
+	if id, _ := params["MESSAGE_ID"].(float64); id != 42 {
+		t.Errorf("MESSAGE_ID: %v", params["MESSAGE_ID"])
+	}
+	if err := a.LikeMessage(context.Background(), 42, false); err != nil {
+		t.Fatalf("minus: %v", err)
+	}
+	if params["ACTION"] != "minus" {
+		t.Errorf("ACTION minus: %v", params["ACTION"])
+	}
+}
+
+// SearchMessages: CHAT_ID + SEARCH_MESSAGE + LIMIT 50, ответ через SearchFrom.
+func TestSearchMessagesAPI(t *testing.T) {
+	var params map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&params)
+		fmt.Fprint(w, `{"result":{"messages":[
+			{"id":11,"authorId":19,"date":"2026-10-19T08:45:00+03:00","text":"нашлось","params":[]}
+		],"users":[{"id":19,"name":"Петров"}]}}`)
+	}))
+	defer srv.Close()
+
+	a := &API{C: b24.New(srv.URL), My: 75}
+	rows, err := a.SearchMessages(context.Background(), 10839, "  ищем ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if params["CHAT_ID"] != float64(10839) || params["SEARCH_MESSAGE"] != "ищем" || params["LIMIT"] != float64(50) {
+		t.Errorf("params: %v", params)
+	}
+	if len(rows) != 1 || rows[0].ID != 11 || rows[0].Text != "нашлось" || rows[0].Name != "Петров" {
+		t.Errorf("rows: %+v", rows)
+	}
+	// отказы на своей стороне — без запроса к порталу
+	if _, err := a.SearchMessages(context.Background(), 0, "ищем"); err == nil {
+		t.Error("chatID=0 должен быть ошибкой")
+	}
+	if _, err := a.SearchMessages(context.Background(), 10839, "ab"); err == nil {
+		t.Error("меньше 3 символов должен быть ошибкой")
+	}
+}
