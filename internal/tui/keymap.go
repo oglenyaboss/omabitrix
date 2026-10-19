@@ -10,6 +10,7 @@ type keyMap struct {
 	Top        key.Binding // g
 	Bottom     key.Binding // G
 	Open       key.Binding // enter
+	NextDue    key.Binding // n на пульте — ближайший срок
 	Back       key.Binding // esc
 	Quit       key.Binding // q
 	ForceQuit  key.Binding // ctrl+c
@@ -63,6 +64,10 @@ var km = keyMap{
 	Open: key.NewBinding(
 		key.WithKeys("enter"),
 		key.WithHelp("enter", "открыть"),
+	),
+	NextDue: key.NewBinding(
+		key.WithKeys("n"),
+		key.WithHelp("n", "ближайший срок"),
 	),
 	Back: key.NewBinding(
 		key.WithKeys("esc"),
@@ -212,7 +217,7 @@ func (m Model) shortHelp() []key.Binding {
 	case m.tab == tabNotify:
 		return []key.Binding{km.Open, km.ReadAll, km.Refresh, km.Help}
 	case m.tab == tabHome:
-		return []key.Binding{km.Tab2, km.Tab3, km.Tab4, km.Refresh, km.Help}
+		return []key.Binding{km.NextDue, km.Tab2, km.Tab3, km.Tab4, km.Refresh, km.Help}
 	default:
 		return []key.Binding{km.Open, km.Filter, km.Help}
 	}
@@ -228,7 +233,7 @@ func (m Model) fullHelp() [][]key.Binding {
 		// чаты (r — ответить, на выделенном — с цитатой)
 		{km.Select, km.ReplyQuote, km.Edit, km.Delete, km.Like, km.Mention, km.Send, km.Cancel, km.Older, km.Search},
 		// задачи
-		{km.Status, km.Deadline, km.TaskChat, km.Comment},
+		{km.NextDue, km.Status, km.Deadline, km.TaskChat, km.Comment},
 		// уведы
 		{km.ReadAll},
 		// общее

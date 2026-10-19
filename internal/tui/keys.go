@@ -207,6 +207,26 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// пульт: n/enter — открыть ближайшую задачу
+	if m.tab == tabHome && m.focus == focusList {
+		if key.Matches(msg, km.NextDue) || key.Matches(msg, km.Open) {
+			if t, ok := m.nextDue(); ok {
+				id := t.ID
+				m.switchTab(tabTasks)
+				for i, r := range m.flatTasks() {
+					if r.task.ID == id {
+						m.cursor, m.taskIdx = i, i
+						break
+					}
+				}
+				return m, m.requestCard(id)
+			}
+			m.flash = "сроков нет"
+			m.flashAt = m.api.now()
+			return m, nil
+		}
+	}
+
 	// глобальные
 	switch {
 	case key.Matches(msg, km.Quit), key.Matches(msg, km.Back):
