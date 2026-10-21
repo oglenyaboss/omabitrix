@@ -15,7 +15,6 @@ var (
 	cBorder = compat.AdaptiveColor{Light: lipgloss.Color("#b8c4c0"), Dark: lipgloss.Color("#3a4844")}
 	cAccent = compat.AdaptiveColor{Light: lipgloss.Color("#0f7b6c"), Dark: lipgloss.Color("#39d3b6")}
 	cUrgent = compat.AdaptiveColor{Light: lipgloss.Color("#b02a37"), Dark: lipgloss.Color("#f26d7d")}
-	cMine   = compat.AdaptiveColor{Light: lipgloss.Color("#0f7b6c"), Dark: lipgloss.Color("#1f5f56")}
 
 	stTitle   = lipgloss.NewStyle().Bold(true).Foreground(cFg)
 	stDim     = lipgloss.NewStyle().Foreground(cDim)
@@ -34,7 +33,6 @@ var (
 
 	stChatUnread = lipgloss.NewStyle().Bold(true).Foreground(cFg)
 	stOnline     = lipgloss.NewStyle().Foreground(cAccent).SetString("●")
-	stBubbleMine = lipgloss.NewStyle().Foreground(cMine)
 	stHelpKey    = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
 	stHelpDesc   = lipgloss.NewStyle().Foreground(cDim)
 	stErr        = lipgloss.NewStyle().Foreground(cUrgent).Bold(true)

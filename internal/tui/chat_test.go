@@ -155,27 +155,45 @@ func TestChatRowsAvatarAndSelection(t *testing.T) {
 	}
 }
 
-// Своё сообщение прижато вправо: правый край на колонке W, строка
-// оканчивается временем и «›».
-func TestMineMessageRightAligned(t *testing.T) {
+// Своё сообщение — той же раскладкой, что чужие: строка «я время»,
+// ниже текст обычным цветом, без правого прижатия и «›».
+func TestMineMessageRenderedLikePeers(t *testing.T) {
 	active := &Chat{DialogID: "chat7"}
-	msgs := []Message{{ID: 1, Text: "Ок, вечером посмотрю", Time: "15:20", DayKey: "d", DayLabel: "сегодня", Mine: true}}
+	msgs := []Message{{ID: 1, Name: "Ложкин Леонид", Text: "Ок, вечером посмотрю", Time: "15:20", DayKey: "d", DayLabel: "сегодня", Mine: true}}
 	m := viewModel(120, 36, nil, nil, nil, active, msgs)
-	W := m.vp.Width() - 1
-	for _, l := range strings.Split(m.vp.View(), "\n") {
-		if !strings.Contains(l, "Ок, вечером") {
-			continue
+	v := m.vp.View()
+	nameLine, textLine := false, ""
+	for _, l := range strings.Split(v, "\n") {
+		s := ansi.Strip(l)
+		if strings.HasPrefix(s, "Ложкин Леонид 15:20") {
+			nameLine = true
 		}
-		s := strings.TrimRight(ansi.Strip(l), " ")
-		if !strings.HasSuffix(s, "›") {
-			t.Fatalf("строка не оканчивается «›»: %q", s)
+		if strings.Contains(s, "Ок, вечером") {
+			textLine = s
 		}
-		if w := lipgloss.Width(s); w != W {
-			t.Fatalf("правый край на колонке %d, хочу %d", w-1, W-1)
-		}
-		return
 	}
-	t.Fatal("строки своего сообщения нет в кадре")
+	if !nameLine {
+		t.Fatalf("строки имени со временем нет:\n%s", v)
+	}
+	if strings.TrimSpace(textLine) == "" {
+		t.Fatal("текста своего сообщения нет в кадре")
+	}
+	if w := lipgloss.Width(strings.TrimRight(textLine, " ")); w > m.vp.Width()-1 {
+		t.Fatalf("текст шире панели: %q", textLine)
+	}
+	if strings.Contains(v, "›") {
+		t.Fatalf("остался маркер правого прижатия «›»:\n%s", v)
+	}
+}
+
+// Безымянное своё (optimistic-аппенд) — подпись «я», а не «?».
+func TestMineNamelessFallback(t *testing.T) {
+	msgs := []Message{{ID: 1, Text: "моё", Time: "15:20", DayKey: "d", DayLabel: "сегодня", Mine: true}}
+	m := viewModel(120, 36, nil, nil, nil, &Chat{DialogID: "chat7"}, msgs)
+	v := ansi.Strip(m.vp.View())
+	if !strings.Contains(v, "\nя 15:20") && !strings.HasPrefix(v, "я 15:20") {
+		t.Fatalf("подписи «я» нет:\n%s", v)
+	}
 }
 
 // Длинное своё сообщение переносится, все строки не шире W.
@@ -199,7 +217,7 @@ func TestMineLongMessageWraps(t *testing.T) {
 	}
 }
 
-// Выделение своего сообщения: «▌» в колонке 0, строка не шире W.
+// Выделение своего сообщения: «▌» перед строкой, не шире W.
 func TestMineSelMarkerAtColumn0(t *testing.T) {
 	msgs := []Message{{ID: 1, Text: "моё", Time: "15:20", DayKey: "d", DayLabel: "сегодня", Mine: true}}
 	m := viewModel(120, 36, nil, nil, nil, &Chat{DialogID: "chat7"}, msgs)
@@ -327,5 +345,125 @@ func TestToastFits(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// Вставка из терминала в поле ответа: CRLF → LF, многострочность сохранена,
+// фокус на месте, отправка не запускается (вставка — не Enter).
+func TestPasteIntoReply(t *testing.T) {
+	m := chatFollowFixture()
+	m2, _ := keyPress(m, "r")
+	if m2.focus != focusReply {
+		t.Fatalf("r не в поле ответа: %v", m2.focus)
+	}
+	mm, _ := m2.Update(tea.PasteMsg{Content: "привет\r\nмир"})
+	m3 := mm.(Model)
+	if m3.reply.Value() != "привет\nмир" {
+		t.Fatalf("вставка в поле: %q", m3.reply.Value())
+	}
+	if m3.focus != focusReply || m3.sending {
+		t.Fatalf("вставка сбила состояние: focus=%v sending=%v", m3.focus, m3.sending)
+	}
+	// хвостовой перевод строки — не Enter: отправки нет
+	mm, _ = m3.Update(tea.PasteMsg{Content: "хвост\n"})
+	m4 := mm.(Model)
+	if m4.sending || m4.reply.Value() == "" {
+		t.Fatalf("вставка с \n на конце: sending=%v value=%q", m4.sending, m4.reply.Value())
+	}
+}
+
+// Вставка в фильтр чатов: список отфильтрован, как при наборе с клавиатуры.
+func TestPasteIntoFilter(t *testing.T) {
+	chats := []Chat{{DialogID: "d0", Title: "Анна"}, {DialogID: "d1", Title: "Борис"}}
+	m := viewModel(120, 36, chats, nil, nil, nil, nil)
+	m2, _ := keyPress(m, "/")
+	if m2.focus != focusFilter {
+		t.Fatalf("/ не в фильтре: %v", m2.focus)
+	}
+	mm, _ := m2.Update(tea.PasteMsg{Content: "Бор"})
+	m3 := mm.(Model)
+	vc := m3.visibleChats()
+	if len(vc) != 1 || vc[0].Title != "Борис" {
+		t.Fatalf("фильтр по вставке: %+v", vc)
+	}
+}
+
+// Вставка в поиск по истории: однострочное поле, переводы строк — в пробел.
+func TestPasteIntoSearch(t *testing.T) {
+	m := chatFollowFixture()
+	m2, _ := keyPress(m, "/")
+	if m2.focus != focusSearch {
+		t.Fatalf("/ не в поиске: %v", m2.focus)
+	}
+	mm, _ := m2.Update(tea.PasteMsg{Content: "a\nb"})
+	m3 := mm.(Model)
+	if m3.searchIn.Value() != "a b" {
+		t.Fatalf("вставка в поиск: %q", m3.searchIn.Value())
+	}
+}
+
+// Вставка при фокусе на списке никуда не попадает и не паникует.
+func TestPasteIgnoredOnListFocus(t *testing.T) {
+	m := chatFollowFixture()
+	m.active = nil
+	m.reply.SetValue("было")
+	mm, cmd := m.Update(tea.PasteMsg{Content: "x"})
+	m2 := mm.(Model)
+	if cmd != nil {
+		t.Fatal("вставка в списке дала команду")
+	}
+	if m2.reply.Value() != "было" || m2.filterIn.Value() != "" || m2.searchIn.Value() != "" {
+		t.Fatalf("вставка тронула поля: %q/%q/%q",
+			m2.reply.Value(), m2.filterIn.Value(), m2.searchIn.Value())
+	}
+	if m2.focus != focusList {
+		t.Fatalf("фокус слетел: %v", m2.focus)
+	}
+}
+
+// y на выделенном: текст в системный буфер (OSC 52), флеш, режим остаётся;
+// пустой текст — флеш «нечего копировать» без команды.
+func TestSelCopyToClipboard(t *testing.T) {
+	msgs := []Message{{ID: 1, Text: "текст", Time: "15:20", DayKey: "d", DayLabel: "сегодня"}}
+	m := chatFollowFixture()
+	m.history = msgs
+	m.renderHistory()
+	m2, _ := keyPress(m, "v")
+	if m2.sel != 0 {
+		t.Fatalf("v не встал на сообщение: sel=%d", m2.sel)
+	}
+	m3, cmd := keyPress(m2, "y")
+	if cmd == nil {
+		t.Fatal("y не дал команду буфера")
+	}
+	if m3.flash != "✓ скопировано" || m3.sel != 0 {
+		t.Fatalf("y: flash=%q sel=%d", m3.flash, m3.sel)
+	}
+	if s := fmt.Sprintf("%T", cmd()); !strings.Contains(s, "lipboard") {
+		t.Fatalf("команда не буфер обмена: %s", s)
+	}
+
+	m4 := chatFollowFixture()
+	m4.history = []Message{{ID: 1, Text: "", Time: "15:20"}}
+	m4.renderHistory()
+	m5, _ := keyPress(m4, "v")
+	m6, cmd2 := keyPress(m5, "y")
+	if cmd2 != nil || m6.flash != "нечего копировать" {
+		t.Fatalf("пустой текст: cmd=%v flash=%q", cmd2, m6.flash)
+	}
+}
+
+// Подсказка режима выделения показывает «y копировать».
+func TestSelHelpShowsCopy(t *testing.T) {
+	msgs := []Message{{ID: 1, Text: "текст", Time: "15:20", DayKey: "d", DayLabel: "сегодня"}}
+	m := chatFollowFixture()
+	m.history = msgs
+	m.renderHistory()
+	m2, _ := keyPress(m, "v")
+	if m2.sel != 0 {
+		t.Fatalf("v не встал на сообщение: sel=%d", m2.sel)
+	}
+	if s := ansi.Strip(m2.View().Content); !strings.Contains(s, "копировать") {
+		t.Fatalf("подсказки копирования нет:\n%s", s)
 	}
 }

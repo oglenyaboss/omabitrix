@@ -116,7 +116,47 @@ func TestReadDialogAPI(t *testing.T) {
 	}
 }
 
-// ReadNotify — ровно одно уведомление: ACTION=Y, ONLY_CURRENT=Y (без него
+// Chats — непрочитанные под-чатов коллаба (CHANNEL_COMMENT в im.counters.get)
+// докладываются на строку коллаба: recent.list их в counter не кладёт,
+// и сообщение было бы невидимо в списке (живой кейс portal.example.com).
+func TestChatsCollabUnreadFromCounters(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/im.recent.list.json"):
+			fmt.Fprint(w, `{"result":{"items":[
+				{"id":"chat127","chat_id":127,"title":"Команда","counter":0,
+				 "message":{"text":"живое обсуждение","date":"2026-10-21T05:00:00+03:00","chat_id":9097}},
+				{"id":13,"title":"Орлова","counter":0,
+				 "message":{"text":"привет","date":"2026-10-20T09:00:00+03:00"}}]}}`)
+		case strings.HasSuffix(r.URL.Path, "/im.counters.get.json"):
+			fmt.Fprint(w, `{"result":{"TYPE":{"ALL":2,"MESSENGER":2,"CHAT":0,"DIALOG":0},
+				"CHANNEL_COMMENT":{"127":{"9097":2}}}}`)
+		default:
+			t.Errorf("метод: %s", r.URL.Path)
+			fmt.Fprint(w, `{"result":{}}`)
+		}
+	}))
+	defer srv.Close()
+
+	a := &API{C: b24.New(srv.URL), My: 75}
+	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	a.Now = func() time.Time { return now }
+	chats, err := a.Chats(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chats) != 2 {
+		t.Fatalf("len=%d: %+v", len(chats), chats)
+	}
+	if chats[0].Title != "Команда" || chats[0].Counter != 2 || chats[0].DialogID != "chat9097" {
+		t.Errorf("коллаб без бейджа под-чата: %+v", chats[0])
+	}
+	if chats[1].Counter != 0 {
+		t.Errorf("обычный чат задет: %+v", chats[1])
+	}
+}
+
+// MarkNotify — ровно одно уведомление: ACTION=Y, ONLY_CURRENT=Y (без него
 // портал читает все с ID ≥ данного); локальный флаг гаснет только у этого ID.
 func TestReadNotifyAPI(t *testing.T) {
 	var params map[string]any
@@ -131,7 +171,7 @@ func TestReadNotifyAPI(t *testing.T) {
 
 	a := &API{C: b24.New(srv.URL), My: 75,
 		allNotify: []NotifyItem{{ID: "42", Unread: true}, {ID: "43", Unread: true}}}
-	if err := a.ReadNotify(context.Background(), "42"); err != nil {
+	if err := a.MarkNotify(context.Background(), "42", true); err != nil {
 		t.Fatal(err)
 	}
 	if params["ID"] != "42" || params["ACTION"] != "Y" || params["ONLY_CURRENT"] != "Y" {
@@ -209,8 +249,10 @@ func TestOpenTasksRolesBatch(t *testing.T) {
 		if q.Get("order[DEADLINE]") != "asc" {
 			t.Errorf("%s: order: %v", key, q)
 		}
-		if sel := q.Get("select[0]"); !strings.Contains(sel, "NEW_COMMENTS_COUNT") || !strings.Contains(sel, "CHAT_ID") {
-			t.Errorf("%s: select: %q", key, sel)
+		// select — отдельные элементы: запятая-строку портал молча игнорирует
+		// и не возвращает newCommentsCount (живой факт portal.example.com)
+		if q.Get("select[0]") != "ID" || q.Get("select[6]") != "NEW_COMMENTS_COUNT" {
+			t.Errorf("%s: select: %v", key, q)
 		}
 	}
 }
@@ -449,5 +491,180 @@ func TestMoveStageAPI(t *testing.T) {
 	}
 	if !a.tasksAt.IsZero() {
 		t.Error("кэш задач не сброшен")
+	}
+}
+
+// notifyPage — страница im.notify.get с заданными id: прочитанные, даты
+// растут вместе с id (свежие первыми, как на портале); unread — счётчик страницы.
+func notifyPage(unread int, ids ...int) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, `{"total_unread_count":%d,"notifications":[`, unread)
+	for i, id := range ids {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		fmt.Fprintf(&sb, `{"id":%d,"notify_module":"tasks","notify_tag":"TASKS|TASK|%d|75",`+
+			`"notify_read":"Y","text":"дело %d","date":"2026-10-%02dT10:00:00+03:00"}`, id, id, id, id)
+	}
+	sb.WriteString(`],"users":[]}`)
+	return sb.String()
+}
+
+func idsOf(items []NotifyItem) []string {
+	out := make([]string, len(items))
+	for i, it := range items {
+		out[i] = it.ID
+	}
+	return out
+}
+
+// Догрузка старых уведов: LAST_ID = минимальный id, LAST_TYPE=3, LIMIT=50;
+// дубли не добавляются, пустая страница — конец (дальше запросов нет),
+// перечитка первой страницы догруженные строки сохраняет.
+func TestNotifyOlderPagination(t *testing.T) {
+	var mu sync.Mutex
+	var params map[string]any
+	gets := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/im.notify.get.json") {
+			t.Errorf("метод: %s, хочу im.notify.get", r.URL.Path)
+			return
+		}
+		mu.Lock()
+		gets++
+		params = nil
+		json.NewDecoder(r.Body).Decode(&params)
+		mu.Unlock()
+		if params["LAST_ID"] == nil {
+			fmt.Fprintf(w, `{"result":%s,"time":{}}`, notifyPage(1, 30, 20, 10))
+			return
+		}
+		if got := fmt.Sprint(params["LAST_ID"]); got != "10" {
+			// курсор ушёл глубже первой догрузки — старых больше нет
+			fmt.Fprint(w, `{"result":{"notifications":[],"users":[]},"time":{}}`)
+			return
+		}
+		if got := fmt.Sprint(params["LAST_TYPE"]); got != "3" {
+			t.Errorf("LAST_TYPE: %v, хочу 3", params["LAST_TYPE"])
+		}
+		if got := fmt.Sprint(params["LIMIT"]); got != "50" {
+			t.Errorf("LIMIT: %v, хочу 50", params["LIMIT"])
+		}
+		fmt.Fprintf(w, `{"result":%s,"time":{}}`, notifyPage(0, 9, 8, 10))
+	}))
+	defer srv.Close()
+
+	a := &API{C: b24.New(srv.URL), My: 75}
+	if _, err := a.Notify(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if a.NotifyUnread() != 1 {
+		t.Fatalf("счётчик страницы: %d, хочу 1", a.NotifyUnread())
+	}
+	n, err := a.NotifyOlder(context.Background())
+	if err != nil || n != 2 {
+		t.Fatalf("NotifyOlder: n=%d err=%v (дубль 10 не считается)", n, err)
+	}
+	if got := strings.Join(idsOf(a.allNotify), ","); got != "30,20,10,9,8" {
+		t.Fatalf("после догрузки: %s", got)
+	}
+	// вторая догрузка: LAST_ID=8, пустая страница — конец
+	n, err = a.NotifyOlder(context.Background())
+	if err != nil || n != 0 {
+		t.Fatalf("вторая догрузка: n=%d err=%v", n, err)
+	}
+	if !a.NotifyDone() {
+		t.Fatal("пустая страница не выставила notifyDone")
+	}
+	mu.Lock()
+	before := gets
+	mu.Unlock()
+	if _, err := a.NotifyOlder(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	after := gets
+	mu.Unlock()
+	if after != before {
+		t.Fatal("NotifyOlder после конца сделал запрос")
+	}
+
+	// перечитка первой страницы: догруженные 9 и 8 остаются
+	if _, err := a.Notify(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(idsOf(a.allNotify), ","); got != "30,20,10,9,8" {
+		t.Fatalf("перечитка потеряла старые: %s", got)
+	}
+	if !a.NotifyDone() {
+		t.Fatal("Notify сбросил notifyDone")
+	}
+}
+
+// MarkNotify: ACTION Y/N + ONLY_CURRENT=Y; флаг и счётчик двигаются только
+// при реальной смене; ID вне списка — портал зовётся, счётчик на месте.
+func TestMarkNotifyAPI(t *testing.T) {
+	var mu sync.Mutex
+	var calls []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/im.notify.read.json") {
+			t.Errorf("метод: %s", r.URL.Path)
+		}
+		var p map[string]any
+		json.NewDecoder(r.Body).Decode(&p)
+		mu.Lock()
+		calls = append(calls, p)
+		mu.Unlock()
+		fmt.Fprint(w, `{"result":true}`)
+	}))
+	defer srv.Close()
+
+	a := &API{C: b24.New(srv.URL), My: 75,
+		allNotify:    []NotifyItem{{ID: "42", Unread: false}},
+		notifyUnread: 2}
+	if err := a.MarkNotify(context.Background(), "42", false); err != nil {
+		t.Fatal(err)
+	}
+	if p := calls[0]; p["ID"] != "42" || p["ACTION"] != "N" || p["ONLY_CURRENT"] != "Y" {
+		t.Errorf("unread params: %v", p)
+	}
+	if !a.allNotify[0].Unread || a.NotifyUnread() != 3 {
+		t.Fatalf("unread: flag=%v counter=%d", a.allNotify[0].Unread, a.NotifyUnread())
+	}
+	if err := a.MarkNotify(context.Background(), "42", true); err != nil {
+		t.Fatal(err)
+	}
+	if p := calls[1]; p["ACTION"] != "Y" || p["ONLY_CURRENT"] != "Y" {
+		t.Errorf("read params: %v", p)
+	}
+	if a.allNotify[0].Unread || a.NotifyUnread() != 2 {
+		t.Fatalf("read: flag=%v counter=%d", a.allNotify[0].Unread, a.NotifyUnread())
+	}
+	if err := a.MarkNotify(context.Background(), "999", true); err != nil {
+		t.Fatal(err)
+	}
+	if a.NotifyUnread() != 2 {
+		t.Fatalf("чужой id сдвинул счётчик: %d", a.NotifyUnread())
+	}
+}
+
+// Прочитать все: локальные флаги и серверный счётчик в ноль.
+func TestReadAllNotifyResetsCounter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"result":true}`)
+	}))
+	defer srv.Close()
+
+	a := &API{C: b24.New(srv.URL), My: 75,
+		allNotify:    []NotifyItem{{ID: "1", Unread: true}, {ID: "2", Unread: true}},
+		notifyUnread: 5}
+	if err := a.ReadAllNotify(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if a.allNotify[0].Unread || a.allNotify[1].Unread {
+		t.Fatalf("флаги: %+v", a.allNotify)
+	}
+	if a.NotifyUnread() != 0 {
+		t.Fatalf("счётчик: %d, хочу 0", a.NotifyUnread())
 	}
 }

@@ -138,7 +138,7 @@ func (m *mockPortal) handler(t *testing.T) http.HandlerFunc {
 			vals, _ := url.ParseQuery(q)
 			switch method {
 			case "im.counters.get":
-				res[k] = map[string]any{"TYPE": map[string]any{"ALL": 1, "NOTIFY": 1, "CHAT": 0, "DIALOG": 0}}
+				res[k] = map[string]any{"TYPE": map[string]any{"ALL": 1, "NOTIFY": 1, "MESSENGER": 1, "CHAT": 0, "DIALOG": 0}}
 			case "im.v2.Event.get":
 				offset := 0
 				fmt.Sscanf(vals.Get("offset"), "%d", &offset)
@@ -241,6 +241,10 @@ func TestCycle(t *testing.T) {
 	snap := readSnapshot(t, cfg.SnapshotPath)
 	if snap.Overdue != 1 || snap.Error != "" {
 		t.Errorf("snapshot: %+v", snap)
+	}
+	// MESSENGER=1 при CHAT=0/DIALOG=0 (комменты коллаба): бейдж бара видит их
+	if snap.Chats != 1 {
+		t.Errorf("snap.Chats = %d, хочу 1 (MESSENGER)", snap.Chats)
 	}
 	if len(snap.Unread) != 1 || snap.Unread[0].DialogID != "chat10839" || snap.Unread[0].Counter != 2 {
 		t.Errorf("unread: %+v", snap.Unread)

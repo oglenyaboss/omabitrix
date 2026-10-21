@@ -328,8 +328,19 @@ func TestHistoryGrouping(t *testing.T) {
 	if !strings.Contains(v, "первое") || !strings.Contains(v, "второе") || !strings.Contains(v, "ответ") {
 		t.Fatalf("текст потерялся:\n%s", v)
 	}
-	if !strings.Contains(v, "›") {
-		t.Fatalf("нет маркера своего сообщения:\n%s", v)
+	// подряд идущие сообщения одного автора разделены пустой строкой
+	stripped := strings.Split(ansi.Strip(v), "\n")
+	idx := func(sub string) int {
+		for i, l := range stripped {
+			if strings.Contains(l, sub) {
+				return i
+			}
+		}
+		return -1
+	}
+	i1, i2 := idx("первое"), idx("второе")
+	if i1 < 0 || i2 < 0 || i2-i1 != 2 || strings.TrimSpace(stripped[i1+1]) != "" {
+		t.Fatalf("сообщения Анны не разделены пустой строкой (i1=%d i2=%d):\n%s", i1, i2, v)
 	}
 	// разделитель дня по центру: начинается и кончается тире (паддинг
 	// вьюпорта справа не считаем)
@@ -1323,5 +1334,316 @@ func TestSentMentionReadable(t *testing.T) {
 	mm, _ = m.Update(sentMsg{dialogID: "chat7", text: "[USER=42]Анна[/USER] ок", err: errors.New("x")})
 	if got := mm.(Model).reply.Value(); got != "@Анна ок" {
 		t.Fatalf("в поле после ошибки: %q", got)
+	}
+}
+
+// ---- уведы: автор/текст, превью, u, догрузка, колесо
+
+// Строка уведа: автор и текст; на узком экране превью-панели нет.
+func TestNotifyRowAuthorAndText(t *testing.T) {
+	notify := []NotifyItem{{ID: "1", Author: "Коллега A", Text: "Назначил вас исполнителем",
+		Time: "10:05", Module: "tasks", TaskID: 5}}
+	m := viewModel(80, 30, nil, nil, notify, nil, nil)
+	m.tab = tabNotify
+	s := ansi.Strip(m.View().Content)
+	if !strings.Contains(s, "Коллега A") || !strings.Contains(s, "Назначил вас исполнителем") {
+		t.Fatalf("автора/текста нет в строке:\n%s", s)
+	}
+	// подсказки живут только в превью (широкий экран)
+	if strings.Contains(s, "открыть задачу") || strings.Contains(s, "отметить непрочитанным") {
+		t.Fatalf("превью протекло на узкий экран:\n%s", s)
+	}
+}
+
+// Широкий экран: превью с полной датой, полным текстом и подсказкой;
+// ничего не вылезает за экран.
+func TestNotifyPreviewWide(t *testing.T) {
+	long := strings.Repeat("слово ", 50) + "финиш"
+	notify := []NotifyItem{{ID: "1", Author: "Коллега A", Text: long,
+		Time: "10:05", Module: "tasks", TaskID: 5, Date: "20.10.2026 09:42"}}
+	m := viewModel(140, 40, nil, nil, notify, nil, nil)
+	m.tab = tabNotify
+	v := m.View().Content
+	s := ansi.Strip(v)
+	if !strings.Contains(s, "20.10.2026 09:42") {
+		t.Fatalf("полной даты нет:\n%s", s)
+	}
+	if !strings.Contains(s, "финиш") {
+		t.Fatalf("конец длинного текста не влез в превью:\n%s", s)
+	}
+	if !strings.Contains(s, "enter — открыть задачу") || !strings.Contains(s, "отметить непрочитанным") {
+		t.Fatalf("подсказок нет:\n%s", s)
+	}
+	for i, line := range strings.Split(v, "\n") {
+		if lw := lipgloss.Width(line); lw > 140 {
+			t.Fatalf("строка %d шире 140: %d", i, lw)
+		}
+	}
+	if h := lipgloss.Height(v); h > 40 {
+		t.Fatalf("высота %d > 40", h)
+	}
+}
+
+// enter на уведе со ссылкой: браузер открывает URL, увед гаснет.
+func TestNotifyEnterOpensURL(t *testing.T) {
+	old := startOpener
+	var got string
+	startOpener = func(url string) error { got = url; return nil }
+	defer func() { startOpener = old }()
+
+	var mu sync.Mutex
+	var params map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		params = nil
+		json.NewDecoder(r.Body).Decode(&params)
+		mu.Unlock()
+		fmt.Fprint(w, `{"result":true}`)
+	}))
+	defer srv.Close()
+
+	notify := []NotifyItem{{ID: "2", Module: "calendar", URL: "https://x/cal", Unread: true}}
+	m := viewModel(120, 36, nil, nil, notify, nil, nil)
+	m.api = &API{C: b24.New(srv.URL), My: 75}
+	m.ctx = context.Background()
+	m.tab = tabNotify
+	m2, cmd := keyPress(m, "enter")
+	if cmd == nil {
+		t.Fatal("enter не дал команду")
+	}
+	execAll(cmd)
+	if got != "https://x/cal" {
+		t.Fatalf("открылось %q, хочу https://x/cal", got)
+	}
+	if m2.notify[0].Unread {
+		t.Fatal("enter не погасил Unread")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if params["ACTION"] != "Y" {
+		t.Fatalf("увед не прочитан: %v", params)
+	}
+}
+
+// o на уведе со ссылкой открывает её, не трогая флаг чтения.
+func TestNotifyBrowserURLOpensURL(t *testing.T) {
+	old := startOpener
+	var got string
+	startOpener = func(url string) error { got = url; return nil }
+	defer func() { startOpener = old }()
+
+	notify := []NotifyItem{{ID: "3", URL: "https://x/y"}}
+	m := withPortal(viewModel(120, 36, nil, nil, notify, nil, nil))
+	m.tab = tabNotify
+	if u := m.browserURL(); u != "https://x/y" {
+		t.Fatalf("browserURL: %q, хочу https://x/y", u)
+	}
+	_, cmd := keyPress(m, "o")
+	if cmd == nil {
+		t.Fatal("o не дал команду")
+	}
+	if bm, ok := cmd().(browserMsg); !ok || bm.err != nil {
+		t.Fatalf("команда не браузер: %T", cmd())
+	}
+	if got != "https://x/y" {
+		t.Fatalf("открылось %q, хочу https://x/y", got)
+	}
+}
+
+// u на уведе: флаг локально и ACTION=N на портале; курсор на месте.
+func TestNotifyToggleUnreadKey(t *testing.T) {
+	var mu sync.Mutex
+	var params map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/im.notify.read.json") {
+			t.Errorf("метод: %s", r.URL.Path)
+		}
+		mu.Lock()
+		params = nil
+		json.NewDecoder(r.Body).Decode(&params)
+		mu.Unlock()
+		fmt.Fprint(w, `{"result":true}`)
+	}))
+	defer srv.Close()
+
+	notify := []NotifyItem{{ID: "4", Text: "дело", Time: "10:00"}}
+	m := viewModel(120, 36, nil, nil, notify, nil, nil)
+	m.api = &API{C: b24.New(srv.URL), My: 75}
+	m.ctx = context.Background()
+	m.tab = tabNotify
+	m2, cmd := keyPress(m, "u")
+	if cmd == nil {
+		t.Fatal("u не дал команду")
+	}
+	if !m2.notify[0].Unread {
+		t.Fatal("u не выставил Unread локально")
+	}
+	if m2.cursor != 0 {
+		t.Fatalf("курсор уехал: %d", m2.cursor)
+	}
+	execAll(cmd)
+	mu.Lock()
+	defer mu.Unlock()
+	if params["ID"] != "4" || params["ACTION"] != "N" || params["ONLY_CURRENT"] != "Y" {
+		t.Fatalf("params: %v", params)
+	}
+}
+
+// Курсор у конца списка уведов догружает старые: один запрос за раз,
+// фильтр запрещает догрузку; перечитка не требуется.
+func TestNotifyOlderOnCursorEnd(t *testing.T) {
+	var mu sync.Mutex
+	gets := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/im.notify.get.json") {
+			t.Errorf("метод: %s", r.URL.Path)
+			return
+		}
+		mu.Lock()
+		gets++
+		mu.Unlock()
+		var p map[string]any
+		json.NewDecoder(r.Body).Decode(&p)
+		if p["LAST_ID"] == nil {
+			var sb strings.Builder
+			sb.WriteString(`{"notifications":[`)
+			for i := range 60 {
+				if i > 0 {
+					sb.WriteString(",")
+				}
+				fmt.Fprintf(&sb, `{"id":%d,"notify_module":"tasks","notify_read":"Y",`+
+					`"text":"дело %d","date":"2026-10-19T10:00:00+03:00"}`, 100-i, i)
+			}
+			sb.WriteString(`],"users":[]}`)
+			fmt.Fprintf(w, `{"result":%s,"time":{}}`, sb.String())
+			return
+		}
+		fmt.Fprint(w, `{"result":{"notifications":[
+			{"id":40,"notify_module":"tasks","notify_read":"Y","text":"старое 1","date":"2026-10-09T10:00:00+03:00"},
+			{"id":39,"notify_module":"tasks","notify_read":"Y","text":"старое 2","date":"2026-10-08T10:00:00+03:00"},
+			{"id":38,"notify_module":"tasks","notify_read":"Y","text":"старое 3","date":"2026-10-07T10:00:00+03:00"}],
+			"users":[]},"time":{}}`)
+	}))
+	defer srv.Close()
+
+	a := &API{C: b24.New(srv.URL), My: 75}
+	items, err := a.Notify(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 60 {
+		t.Fatalf("страница: %d уведов", len(items))
+	}
+	m := viewModel(120, 40, nil, nil, items, nil, nil)
+	m.api = a
+	m.ctx = context.Background()
+	m.tab = tabNotify
+
+	m2, gcmd := keyPress(m, "G")
+	if gcmd == nil || !m2.notifyLoading {
+		t.Fatalf("G не запустил догрузку: cmd=%v loading=%v", gcmd, m2.notifyLoading)
+	}
+	// пока догрузка в полёте — повторных запросов нет
+	m3, cmd := keyPress(m2, "k")
+	if cmd != nil || !m3.notifyLoading {
+		t.Fatalf("k при загрузке: cmd=%v loading=%v", cmd, m3.notifyLoading)
+	}
+	m4, cmd := keyPress(m3, "j")
+	if cmd != nil || !m4.notifyLoading {
+		t.Fatalf("j при загрузке: cmd=%v loading=%v", cmd, m4.notifyLoading)
+	}
+	// ответ догрузки: список вырос, флаг сброшен, курсор на своём элементе
+	// (id 41 — последний из первой страницы, индекс не менялся)
+	msg := gcmd()
+	if om, ok := msg.(notifyOlderMsg); !ok || om.added != 3 || om.err != nil {
+		t.Fatalf("команда догрузки: %T %+v", msg, msg)
+	}
+	mm, _ := m4.Update(msg)
+	m5 := mm.(Model)
+	if m5.notifyLoading || len(m5.notify) != 63 || m5.cursor != 59 {
+		t.Fatalf("догрузка: loading=%v len=%d cursor=%d", m5.notifyLoading, len(m5.notify), m5.cursor)
+	}
+	if m5.notify[59].ID != "41" {
+		t.Fatalf("курсор не на своём элементе: notify[59]=%s", m5.notify[59].ID)
+	}
+	// фильтр запрещает догрузку
+	m5.filter = "неттакого"
+	m6, cmd := keyPress(m5, "G")
+	if cmd != nil || m6.notifyLoading {
+		t.Fatalf("G с фильтром: cmd=%v loading=%v", cmd, m6.notifyLoading)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if gets != 2 {
+		t.Fatalf("запросов im.notify.get: %d, хочу 2", gets)
+	}
+}
+
+// Колесо на уведах двигает курсор и не скроллит скрытую историю чата.
+func TestNotifyWheelMovesCursorNotViewport(t *testing.T) {
+	notify := make([]NotifyItem, 10)
+	for i := range notify {
+		notify[i] = NotifyItem{ID: fmt.Sprint(i), Text: "дело", Time: "10:00"}
+	}
+	m := viewModel(120, 36, nil, nil, notify, &Chat{DialogID: "d0"}, nil)
+	m.tab = tabNotify
+	before := m.vp.YOffset()
+	mm, _ := m.Update(tea.MouseWheelMsg{X: 115, Y: 10, Button: tea.MouseWheelDown})
+	m2 := mm.(Model)
+	if m2.cursor != 1 {
+		t.Fatalf("колесо не двинуло курсор: %d", m2.cursor)
+	}
+	if m2.vp.YOffset() != before {
+		t.Fatal("колесо проскроллило скрытую историю чата")
+	}
+}
+
+// Бейдж вкладки уведов: серверный счётчик после загрузки с портала,
+// локальный по списку в тестах/до первой загрузки.
+func TestNotifyBadgeServerCounter(t *testing.T) {
+	notify := []NotifyItem{{ID: "1", Unread: true}, {ID: "2", Unread: true}}
+	m := viewModel(120, 36, nil, nil, notify, nil, nil)
+	if m.notifyBadge() != 2 {
+		t.Fatalf("до загрузки: %d, хочу 2 (локальный)", m.notifyBadge())
+	}
+	m.api.notifyAt = m.api.now()
+	m.api.notifyUnread = 5
+	if m.notifyBadge() != 5 {
+		t.Fatalf("после загрузки: %d, хочу 5 (серверный)", m.notifyBadge())
+	}
+}
+
+// pgup/pgdn/H на уведах не скроллят скрытую историю чата; в открытом
+// диалоге — скроллят как раньше.
+func TestNotifyTabIgnoresHistoryScrollKeys(t *testing.T) {
+	msgs := make([]Message, 100)
+	for i := range msgs {
+		msgs[i] = Message{ID: int64(i + 1), Name: "Автор", Text: "строка сообщения подлиннее",
+			Time: "10:00", DayKey: "d", DayLabel: "сегодня"}
+	}
+	m := viewModel(120, 36, nil, nil, nil, &Chat{DialogID: "d0"}, msgs)
+	m.renderHistory()
+	m.vp.GotoBottom()
+	before := m.vp.YOffset()
+	if before == 0 {
+		t.Fatal("история не длиннее окна — проверка пустая")
+	}
+
+	// уведы: скрытая история не трогается
+	m.tab = tabNotify
+	m2, _ := keyPress(m, "pgup")
+	if m2.vp.YOffset() != before {
+		t.Fatalf("pgup на уведах проскроллил скрытую историю: %d → %d", before, m2.vp.YOffset())
+	}
+	m3, _ := keyPress(m2, "H")
+	if m3.vp.YOffset() != before {
+		t.Fatal("H на уведах тронул скрытую историю")
+	}
+
+	// открытый диалог: скролл работает как раньше
+	m.tab = tabChats
+	m4, _ := keyPress(m, "pgup")
+	if m4.vp.YOffset() == before {
+		t.Fatal("pgup в диалоге не скроллит историю")
 	}
 }

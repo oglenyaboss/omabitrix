@@ -1,7 +1,12 @@
 package notify
 
 import (
+	"bytes"
+	"context"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"omabitrix/internal/rules"
 )
@@ -28,7 +33,6 @@ func TestArgsDefaults(t *testing.T) {
 		t.Fatalf("args = %v, хочу %v", got, want)
 	}
 }
-
 
 func TestArgsTui(t *testing.T) {
 	// tui-режим: клик открывает omabitrix в контексте
@@ -57,5 +61,90 @@ func TestArgsTui(t *testing.T) {
 	last := fallback[len(fallback)-1]
 	if last != "https://x" {
 		t.Fatalf("fallback = %v", fallback)
+	}
+}
+
+// waitLines ждёт появления в файле n строк (плеер асинхронный), затем даёт
+// 100мс на опоздавшие дублирующие запуски и требует ровно n.
+func waitLines(t *testing.T, path string, n int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		data, err := os.ReadFile(path)
+		if err == nil && bytes.Count(data, []byte("\n")) >= n {
+			break
+		}
+		if time.Now().After(deadline) {
+			got := 0
+			if data, err := os.ReadFile(path); err == nil {
+				got = bytes.Count(data, []byte("\n"))
+			}
+			t.Fatalf("в %s строк %d, ждали >=%d", path, got, n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if got := bytes.Count(data, []byte("\n")); got != n {
+		t.Fatalf("в %s строк %d, хочу ровно %d", path, got, n)
+	}
+}
+
+func TestSendPlaysSound(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "sound.log")
+	o := &Omarchy{Command: "true", Sound: []string{"sh", "-c", "echo x >> " + file}}
+	if err := o.Send(context.Background(), rules.Toast{Kind: rules.KindSummary, Title: "тест"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	waitLines(t, file, 1)
+}
+
+func TestSendSoundThrottle(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "sound.log")
+	T := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	now := T
+	o := &Omarchy{Command: "true", Sound: []string{"sh", "-c", "echo x >> " + file}, now: func() time.Time { return now }}
+	for i := 0; i < 2; i++ {
+		if err := o.Send(context.Background(), rules.Toast{Kind: rules.KindSummary, Title: "тест"}); err != nil {
+			t.Fatalf("Send %d: %v", i, err)
+		}
+	}
+	waitLines(t, file, 1)
+	now = T.Add(3 * time.Second)
+	if err := o.Send(context.Background(), rules.Toast{Kind: rules.KindSummary, Title: "тест"}); err != nil {
+		t.Fatalf("Send после 3с: %v", err)
+	}
+	waitLines(t, file, 2)
+}
+
+func TestSendSoundPlayerMissing(t *testing.T) {
+	o := &Omarchy{Command: "true", Sound: []string{"/nonexistent-player"}}
+	if err := o.Send(context.Background(), rules.Toast{Kind: rules.KindSummary, Title: "тест"}); err != nil {
+		t.Fatalf("Send: %v, хочу nil при нерабочем плеере", err)
+	}
+}
+
+func TestSendToastErrorStillPlaysSound(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "sound.log")
+	o := &Omarchy{Command: "false", Sound: []string{"sh", "-c", "echo x >> " + file}}
+	err := o.Send(context.Background(), rules.Toast{Kind: rules.KindSummary, Title: "тест"})
+	if err == nil {
+		t.Fatal("хочу ошибку от тоста (false)")
+	}
+	waitLines(t, file, 1)
+}
+
+func TestSendNoSound(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "sound.log")
+	o := &Omarchy{Command: "true"}
+	if err := o.Send(context.Background(), rules.Toast{Kind: rules.KindSummary, Title: "тест"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Fatalf("файл %s не должен создаваться при Sound=nil", file)
 	}
 }

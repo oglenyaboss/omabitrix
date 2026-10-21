@@ -221,14 +221,14 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if key.Matches(msg, km.NextDue) || key.Matches(msg, km.Open) {
 			if t, ok := m.nextDue(); ok {
 				id := t.ID
-				m.switchTab(tabTasks)
+				tabCmd := m.switchTab(tabTasks)
 				for i, r := range m.flatTasks() {
 					if r.task.ID == id {
 						m.cursor, m.taskIdx = i, i
 						break
 					}
 				}
-				return m, m.requestCard(id)
+				return m, tea.Batch(tabCmd, m.requestCard(id))
 			}
 			m.flash = "сроков нет"
 			m.flashAt = m.api.now()
@@ -344,23 +344,17 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, km.ForceQuit):
 		return m, tea.Quit
 	case key.Matches(msg, km.Tab1):
-		m.switchTab(tabHome)
-		return m, nil
+		return m, m.switchTab(tabHome)
 	case key.Matches(msg, km.Tab2):
-		m.switchTab(tabTasks)
-		return m, nil
+		return m, m.switchTab(tabTasks)
 	case key.Matches(msg, km.Tab3):
-		m.switchTab(tabChats)
-		return m, nil
+		return m, m.switchTab(tabChats)
 	case key.Matches(msg, km.Tab4):
-		m.switchTab(tabNotify)
-		return m, nil
+		return m, m.switchTab(tabNotify)
 	case key.Matches(msg, km.NextTab):
-		m.switchTab((m.tab + 1) % tabCount)
-		return m, nil
+		return m, m.switchTab((m.tab + 1) % tabCount)
 	case key.Matches(msg, km.PrevTab):
-		m.switchTab((m.tab + tabCount - 1) % tabCount)
-		return m, nil
+		return m, m.switchTab((m.tab + tabCount - 1) % tabCount)
 	case key.Matches(msg, km.Help):
 		m.overlay = ovHelp
 		return m, nil
@@ -407,6 +401,17 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.tab == tabNotify {
 			return m, m.readAllCmd()
 		}
+	case key.Matches(msg, km.MarkRead):
+		if m.tab == tabNotify && m.focus == focusList {
+			vn := m.visibleNotify()
+			if m.cursor < 0 || m.cursor >= len(vn) {
+				return m, nil
+			}
+			n := vn[m.cursor]
+			unread := !n.Unread
+			m.setNotifyUnread(n.ID, unread)
+			return m, m.markNotifyCmd(n.ID, !unread)
+		}
 	case key.Matches(msg, km.Browser):
 		return m.openBrowser()
 	case key.Matches(msg, km.Status):
@@ -449,7 +454,7 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.visibleCount() > 0 && m.cursor < m.visibleCount()-1 {
 			m.cursor++
 		}
-		return m, tea.Batch(m.followCard(), m.followChat())
+		return m, tea.Batch(m.followCard(), m.followChat(), m.notifyMoreCmd())
 	case key.Matches(msg, km.Up):
 		if m.cursor > 0 {
 			m.cursor--
@@ -464,13 +469,14 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
-		return m, tea.Batch(m.followCard(), m.followChat())
+		return m, tea.Batch(m.followCard(), m.followChat(), m.notifyMoreCmd())
 	case key.Matches(msg, km.Open):
 		return m.enterKey()
 	}
 
-	// скролл истории, если диалог открыт и нет фокуса ввода
-	if m.active != nil {
+	// скролл истории, если диалог открыт и нет фокуса ввода; на уведах и
+	// пульте скрытая история не скроллится — там свои клавиши
+	if m.active != nil && (m.tab == tabChats || m.tab == tabTasks && m.taskOpen) {
 		switch {
 		case key.Matches(msg, km.PageDown):
 			m.vp.PageDown()
@@ -486,6 +492,31 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.flashAt = m.api.now()
 			}
 		}
+	}
+	return m, nil
+}
+
+// paste — вставка из терминала (bracketed paste, tea.PasteMsg): текст в поле
+// под фокусом. CRLF нормализуем; в однострочные поля переводы строк — в пробел.
+// При фокусе на списке вставке некуда попасть — игнорируем.
+func (m Model) paste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
+	content := strings.ReplaceAll(msg.Content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+	switch m.focus {
+	case focusReply:
+		var cmd tea.Cmd
+		m.reply, cmd = m.reply.Update(tea.PasteMsg{Content: content})
+		return m, cmd
+	case focusFilter:
+		var cmd tea.Cmd
+		m.filterIn, cmd = m.filterIn.Update(tea.PasteMsg{Content: strings.ReplaceAll(content, "\n", " ")})
+		m.filter = m.filterIn.Value()
+		m.clampCursors()
+		return m, cmd
+	case focusSearch:
+		var cmd tea.Cmd
+		m.searchIn, cmd = m.searchIn.Update(tea.PasteMsg{Content: strings.ReplaceAll(content, "\n", " ")})
+		return m, cmd
 	}
 	return m, nil
 }
@@ -534,6 +565,15 @@ func (m Model) selKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.sel = -1
 		m.replyActive()
 		return m, m.reply.Focus()
+	case key.Matches(msg, km.Copy):
+		if m.history[m.sel].Text == "" {
+			m.flash = "нечего копировать"
+			m.flashAt = m.api.now()
+			return m, nil
+		}
+		m.flash = "✓ скопировано"
+		m.flashAt = m.api.now()
+		return m, tea.SetClipboard(m.history[m.sel].Text)
 	case key.Matches(msg, km.Edit):
 		if !m.history[m.sel].Mine {
 			m.flash = "можно только свои"
@@ -579,13 +619,18 @@ func (m Model) selKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 // switchTab — смена вкладки: фильтр вкладко-специфичен, сбрасываем;
-// курсор клампится под новый список.
-func (m *Model) switchTab(t tab) {
+// курсор клампится под новый список. Возврат на задачи перепривязывает
+// чат задачи, если на чужой вкладке открыли свой диалог.
+func (m *Model) switchTab(t tab) tea.Cmd {
 	m.tab = t
 	m.filter = ""
 	m.filterIn.SetValue("")
 	m.clampCursors()
 	m.layout()
+	if t == tabTasks {
+		return m.syncTaskChat()
+	}
+	return nil
 }
 
 func (m Model) enterKey() (tea.Model, tea.Cmd) {
@@ -629,6 +674,18 @@ func (m Model) enterKey() (tea.Model, tea.Cmd) {
 					return m, tea.Batch(cmd, m.readNotifyCmd(n.ID))
 				}
 				return m, cmd
+			}
+			if n.URL != "" {
+				// переход по ссылке уведа (календарь и пр.): открыть и прочитать
+				m.flash = "открываю в браузере"
+				m.flashAt = m.api.now()
+				var cmds []tea.Cmd
+				if n.Unread {
+					m.clearNotifyUnread(n.ID)
+					cmds = append(cmds, m.readNotifyCmd(n.ID))
+				}
+				cmds = append(cmds, openURLCmd(n.URL))
+				return m, tea.Batch(cmds...)
 			}
 			m.flash = "у уведомления нет перехода"
 			m.flashAt = m.api.now()

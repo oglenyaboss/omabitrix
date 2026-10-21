@@ -161,8 +161,9 @@ func (m Model) homeNextDue(innerW int) []string {
 		if meta == "" {
 			sep = ""
 		}
-		meta += sep + stAccent.Render(fmt.Sprintf("✎ %d %s",
-			t.NewComments, plural(t.NewComments, "новый", "новых", "новых")))
+		meta += sep + lipgloss.NewStyle().Bold(true).Foreground(pulseColor(m.frame)).
+			Render(fmt.Sprintf("✎ %d %s",
+				t.NewComments, plural(t.NewComments, "новый", "новых", "новых")))
 	}
 	d := dl.Sub(now)
 	label := untilLabel(d)

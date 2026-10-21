@@ -24,15 +24,22 @@ type API struct {
 	chatsAt   time.Time
 	tasksAt   time.Time
 	notifyAt  time.Time
+	cntAt     time.Time
 	allChats  []Chat // полный список, включая чаты задач
 	allTasks  []Task
 	allNotify []NotifyItem
+	cnt       b24.Counters
+
+	notifyUnread int  // total_unread_count последней страницы уведов
+	notifyDone   bool // старые страницы уведов кончились
 
 	stages   map[int64][]Stage // канбан проекта по SORT; кэш на сессию
 	projects map[int64]string  // имя проекта по id группы
 }
 
 // Chats — список чатов; чаты задач отфильтрованы в Tasks. TTL 20s.
+// Непрочитанные под-чатов коллабов recent.list в counter не кладёт —
+// докладываем из im.counters.get (CHANNEL_COMMENT по родительскому чату).
 func (a *API) Chats(ctx context.Context, force bool) ([]Chat, error) {
 	if !force && time.Since(a.chatsAt) < 20*time.Second && a.allChats != nil {
 		return a.allChats, nil
@@ -42,7 +49,17 @@ func (a *API) Chats(ctx context.Context, force bool) ([]Chat, error) {
 		return nil, err
 	}
 	now := a.now()
-	all := ChatsFrom(raw, now)
+	all := ChatsFrom(raw, now, a.C.Skew())
+	if cnt, err := a.Counters(ctx); err == nil {
+		for i := range all {
+			if all[i].ParentChatID > 0 {
+				if n := cnt.CollabUnread[strconv.FormatInt(all[i].ParentChatID, 10)]; n > 0 {
+					all[i].Counter += n
+				}
+			}
+		}
+		sortChats(all)
+	}
 	people := make([]Chat, 0, len(all))
 	for _, c := range all {
 		if !IsTaskChat(c.Title) {
@@ -52,6 +69,19 @@ func (a *API) Chats(ctx context.Context, force bool) ([]Chat, error) {
 	a.allChats = people
 	a.chatsAt = now
 	return people, nil
+}
+
+// Counters — im.counters.get, TTL 20s (бейджи и раскладка коллабов).
+func (a *API) Counters(ctx context.Context) (b24.Counters, error) {
+	if time.Since(a.cntAt) < 20*time.Second && a.cntAt != (time.Time{}) {
+		return a.cnt, nil
+	}
+	cnt, err := a.C.Counters(ctx)
+	if err != nil {
+		return b24.Counters{}, err
+	}
+	a.cnt, a.cntAt = cnt, a.now()
+	return cnt, nil
 }
 
 // History — сообщения диалога; lastId>0 — страница старее (пагинация LAST_ID).
@@ -65,7 +95,7 @@ func (a *API) History(ctx context.Context, dialogID string, lastID int64) (rows 
 	if err = a.C.Call(ctx, "im.dialog.messages.get", params, &raw); err != nil {
 		return nil, false, err
 	}
-	rows = MessagesFrom(raw, a.My, a.now())
+	rows = MessagesFrom(raw, a.My, a.now(), a.C.Skew())
 	return rows, len(rows) == 0, nil
 }
 
@@ -147,32 +177,111 @@ func (a *API) SearchMessages(ctx context.Context, chatID int64, query string) ([
 	}, &raw); err != nil {
 		return nil, err
 	}
-	return SearchFrom(raw, a.My, a.now()), nil
+	return SearchFrom(raw, a.My, a.now(), a.C.Skew()), nil
 }
 
 // ReadDialog — прочитать диалог до lastID включительно (MESSAGE_ID обязателен).
 func (a *API) ReadDialog(ctx context.Context, dialogID string, lastID int64) error {
-	err := a.C.Call(ctx, "im.dialog.read", map[string]any{
-		"DIALOG_ID": dialogID, "MESSAGE_ID": lastID,
-	}, nil)
+	if a.C == nil {
+		return nil // синтетическая модель без клиента (тесты)
+	}
+	// lastID=0 — без MESSAGE_ID: портал отмечает прочитанным весь диалог
+	params := map[string]any{"DIALOG_ID": dialogID}
+	if lastID > 0 {
+		params["MESSAGE_ID"] = lastID
+	}
+	err := a.C.Call(ctx, "im.dialog.read", params, nil)
 	if err == nil {
 		a.chatsAt = time.Time{} // счётчик чата в списке погаснет
 	}
 	return err
 }
 
-// Notify — системные уведомления. TTL 20s.
+// Notify — системные уведомления. TTL 20s. Свежая страница (50 шт.,
+// максимум портала) мерджится с догруженными старыми: всё, что по числовому
+// id старее минимального id страницы, остаётся в списке.
 func (a *API) Notify(ctx context.Context, force bool) ([]NotifyItem, error) {
 	if !force && time.Since(a.notifyAt) < 20*time.Second && a.allNotify != nil {
 		return a.allNotify, nil
 	}
 	var raw json.RawMessage
-	if err := a.C.Call(ctx, "im.notify.get", map[string]any{"LIMIT": 30}, &raw); err != nil {
+	if err := a.C.Call(ctx, "im.notify.get", map[string]any{"LIMIT": 50}, &raw); err != nil {
 		return nil, err
 	}
-	a.allNotify = NotifyFrom(raw, a.now())
+	page, unread := NotifyPageFrom(raw, a.now(), a.C.Skew())
+	a.notifyUnread = unread
 	a.notifyAt = a.now()
+	min := int64(0)
+	for _, it := range page {
+		if id, err := strconv.ParseInt(it.ID, 10, 64); err == nil && (min == 0 || id < min) {
+			min = id
+		}
+	}
+	seen := make(map[string]bool, len(page)+len(a.allNotify))
+	for _, it := range page {
+		seen[it.ID] = true
+	}
+	kept := make([]NotifyItem, 0, len(a.allNotify))
+	if min > 0 {
+		for _, it := range a.allNotify {
+			id, err := strconv.ParseInt(it.ID, 10, 64)
+			if err == nil && id < min && !seen[it.ID] {
+				kept = append(kept, it)
+				seen[it.ID] = true
+			}
+		}
+	}
+	a.allNotify = append(page, kept...)
+	sortNotify(a.allNotify)
 	return a.allNotify, nil
+}
+
+// NotifyUnread — серверный счётчик непрочитанных уведов.
+func (a *API) NotifyUnread() int { return a.notifyUnread }
+
+// NotifyDone — старые страницы уведов кончились (пустой ответ NotifyOlder).
+func (a *API) NotifyDone() bool { return a.notifyDone }
+
+// NotifyOlder — следующая (более старая) страница: LAST_ID — минимальный
+// загруженный id, LAST_TYPE=3 (1 повторяет первую страницу, 2/4 дают пусто),
+// LIMIT=50. Пустая страница — старых больше нет.
+func (a *API) NotifyOlder(ctx context.Context) (int, error) {
+	if a.notifyDone || len(a.allNotify) == 0 {
+		return 0, nil
+	}
+	last := int64(0)
+	for _, it := range a.allNotify {
+		if id, err := strconv.ParseInt(it.ID, 10, 64); err == nil && (last == 0 || id < last) {
+			last = id
+		}
+	}
+	if last == 0 {
+		return 0, nil // числовых id нет — курсор строить не из чего
+	}
+	var raw json.RawMessage
+	if err := a.C.Call(ctx, "im.notify.get", map[string]any{
+		"LAST_ID": last, "LAST_TYPE": 3, "LIMIT": 50,
+	}, &raw); err != nil {
+		return 0, err
+	}
+	page, _ := NotifyPageFrom(raw, a.now(), a.C.Skew())
+	if len(page) == 0 {
+		a.notifyDone = true
+		return 0, nil
+	}
+	seen := make(map[string]bool, len(a.allNotify)+len(page))
+	for _, it := range a.allNotify {
+		seen[it.ID] = true
+	}
+	added := 0
+	for _, it := range page {
+		if !seen[it.ID] {
+			a.allNotify = append(a.allNotify, it)
+			added++
+		}
+	}
+	sortNotify(a.allNotify)
+	return added, nil
 }
 
 // ReadAllNotify — пометить все прочитанными + локально сбросить флаги.
@@ -183,22 +292,40 @@ func (a *API) ReadAllNotify(ctx context.Context) error {
 	for i := range a.allNotify {
 		a.allNotify[i].Unread = false
 	}
+	a.notifyUnread = 0
 	return nil
 }
 
-// ReadNotify — прочитать ровно одно уведомление (ONLY_CURRENT обязателен:
-// без него портал читает все с ID ≥ данного).
-func (a *API) ReadNotify(ctx context.Context, id string) error {
+// MarkNotify — прочитать (read) или вернуть непрочитанным ровно одно
+// уведомление (ONLY_CURRENT обязателен: без него портал читает все с ID ≥
+// данного). Счётчик двигаем только при реальной смене флага, не ниже нуля;
+// сортировку не трогаем — курсор UI остаётся на месте.
+func (a *API) MarkNotify(ctx context.Context, id string, read bool) error {
+	action := "Y"
+	if !read {
+		action = "N"
+	}
 	if err := a.C.Call(ctx, "im.notify.read", map[string]any{
-		"ID": id, "ACTION": "Y", "ONLY_CURRENT": "Y",
+		"ID": id, "ACTION": action, "ONLY_CURRENT": "Y",
 	}, nil); err != nil {
 		return err
 	}
 	for i := range a.allNotify {
-		if a.allNotify[i].ID == id {
-			a.allNotify[i].Unread = false
-			break
+		if a.allNotify[i].ID != id {
+			continue
 		}
+		if a.allNotify[i].Unread == !read {
+			break // флаг уже такой — счётчик не трогаем
+		}
+		a.allNotify[i].Unread = !read
+		if read {
+			if a.notifyUnread > 0 {
+				a.notifyUnread--
+			}
+		} else {
+			a.notifyUnread++
+		}
+		break
 	}
 	return nil
 }
@@ -212,7 +339,8 @@ func (a *API) OpenTasks(ctx context.Context, force bool) ([]Task, error) {
 	if !force && time.Since(a.tasksAt) < 20*time.Second && a.allTasks != nil {
 		return a.allTasks, nil
 	}
-	sel := []string{"ID,TITLE,STATUS,DEADLINE,CREATED_BY,CHAT_ID,NEW_COMMENTS_COUNT,GROUP_ID,STAGE_ID"}
+	sel := []string{"ID", "TITLE", "STATUS", "DEADLINE", "CREATED_BY", "CHAT_ID",
+		"NEW_COMMENTS_COUNT", "GROUP_ID", "STAGE_ID"} // отдельные элементы: запятая-строку портал молча игнорирует (без newCommentsCount)
 	order := map[string]string{"DEADLINE": "asc"}
 	taskCmd := func(field string) b24.Cmd {
 		return b24.Cmd{Method: "tasks.task.list", Params: map[string]any{

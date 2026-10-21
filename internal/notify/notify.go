@@ -5,6 +5,7 @@ import (
 	"context"
 	"os/exec"
 	"strconv"
+	"time"
 
 	"omabitrix/internal/rules"
 )
@@ -19,14 +20,46 @@ type Omarchy struct {
 	Command string // omarchy-notification-send
 	Opener  string // omarchy-launch-webapp
 	Mode    string // tui | web
+	// ponytail: путь к звуку захардкожен; апгрейд — ключ sound в config.toml.
+	Sound   []string         // argv плеера; пусто — без звука
+	soundAt time.Time        // когда последний раз запускали звук
+	now     func() time.Time // nil → time.Now, для тестов
 }
 
 func NewOmarchy() *Omarchy {
-	return &Omarchy{Command: "omarchy-notification-send", Opener: "omarchy-launch-webapp", Mode: "tui"}
+	return &Omarchy{
+		Command: "omarchy-notification-send",
+		Opener:  "omarchy-launch-webapp",
+		Mode:    "tui",
+		Sound:   []string{"pw-play", "/usr/share/sounds/freedesktop/stereo/message-new-instant.oga"},
+	}
 }
 
 func (o *Omarchy) Send(ctx context.Context, t rules.Toast) error {
+	o.playSound()
 	return run(ctx, o.Command, Args(t, o.Opener, o.Mode)...)
+}
+
+// playSound запускает плеер в фоне: не ждёт окончания и не возвращает ошибку —
+// звук best-effort, тост от него не зависит. Серия тостов за один опрос
+// (2с) — один звук.
+func (o *Omarchy) playSound() {
+	if len(o.Sound) == 0 {
+		return
+	}
+	nowFn := o.now
+	if nowFn == nil {
+		nowFn = time.Now
+	}
+	if !o.soundAt.IsZero() && nowFn().Sub(o.soundAt) < 2*time.Second {
+		return
+	}
+	o.soundAt = nowFn()
+	cmd := exec.Command(o.Sound[0], o.Sound[1:]...)
+	if err := cmd.Start(); err != nil {
+		return
+	}
+	go cmd.Wait()
 }
 
 func run(ctx context.Context, name string, args ...string) error {

@@ -61,7 +61,7 @@ func (m Model) browserURL() string {
 		if id := vn[m.cursor].TaskID; id > 0 {
 			return rules.TaskURL(m.api.Portal, int(m.api.My), int(id))
 		}
-		return ""
+		return vn[m.cursor].URL
 	}
 }
 

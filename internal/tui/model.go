@@ -59,6 +59,8 @@ type Model struct {
 	buckets TaskBuckets
 	notify  []NotifyItem
 
+	notifyLoading bool // догрузка старых уведов в полёте
+
 	cursor   int // список чатов/задач/уведов (по вкладке)
 	filter   string
 	filterIn textinput.Model
@@ -219,7 +221,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.layout()
-		return m, nil
+		// расширение узкого окна под открытой карточкой: привязать чат задачи
+		return m, m.syncTaskChat()
 
 	case tickMsg:
 		// активность мимо TUI (ответ Анны, отправка из веба) тоже должна
@@ -519,15 +522,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tab = tabTasks
 		m.cursor = m.taskIdx
 		m.layout()
+		var cmds []tea.Cmd
 		// двухпанельный экран: чат задачи открывается сразу, без смены вкладки
-		var cmd tea.Cmd
-		if id := taskChatDialog(m.taskCard.ChatID); m.taskCard.ChatID > 0 && m.twoPane() &&
-			(m.active == nil || m.active.DialogID != id) {
-			m.openTaskChatInline(id)
-			m.active.Title = "чат задачи"
-			cmd = m.historyCmd(id, 0)
+		if cmd := m.syncTaskChat(); cmd != nil {
+			cmds = append(cmds, cmd)
 		}
-		return m, cmd
+		// вход в карточку = просмотр задачи (как в вебе): новые комментарии
+		// в чате задачи считаются увиденными — бейдж гасим локально и на портале.
+		// Иначе ✎ висит вечно: в узком экране чат не открывается сам, а по REST
+		// «просмотреть задачу» нельзя — im.dialog.read чата даёт тот же эффект
+		// (проверено живьём: newCommentsCount обнуляется).
+		if m.taskCard.ChatID > 0 && m.taskCard.NewComments > 0 {
+			m.clearNewComments(m.taskCard.ID)
+			cmds = append(cmds, m.readDialogCmd(taskChatDialog(m.taskCard.ChatID), 0))
+		}
+		return m, tea.Batch(cmds...)
 
 	case cardFollowMsg:
 		// карточка догоняет курсор: живёт только последний тик и только
@@ -587,6 +596,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case notifyOlderMsg:
+		m.notifyLoading = false
+		if msg.err != nil {
+			m.loadErr = "догрузка уведов: " + msg.err.Error()
+		}
+		key := m.cursorKey()
+		m.notify = m.api.snapshotNotify()
+		m.restoreCursor(key)
+		m.clampCursors()
+		return m, nil
+
 	case browserMsg:
 		if msg.err != nil {
 			m.loadErr = "браузер: " + msg.err.Error()
@@ -595,6 +615,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.flash = "открыто в браузере"
 		m.flashAt = m.api.now()
 		return m, nil
+
+	case tea.PasteMsg:
+		return m.paste(msg)
 
 	case tea.KeyPressMsg:
 		if !m.ready {
@@ -966,6 +989,12 @@ func (m Model) readAllCmd() tea.Cmd {
 	return func() tea.Msg { return readAllMsg{err: api.ReadAllNotify(ctx)} }
 }
 
+// notifyOlderMsg — ответ NotifyOlder: сколько старых уведов добавилось.
+type notifyOlderMsg struct {
+	added int
+	err   error
+}
+
 // readMsg — ответ ReadDialog/ReadNotify: при ошибке показываем loadErr.
 type readMsg struct{ err error }
 
@@ -976,7 +1005,28 @@ func (m Model) readDialogCmd(dialogID string, lastID int64) tea.Cmd {
 
 func (m Model) readNotifyCmd(id string) tea.Cmd {
 	api, ctx := m.api, m.ctx
-	return func() tea.Msg { return readMsg{err: api.ReadNotify(ctx, id)} }
+	return func() tea.Msg { return readMsg{err: api.MarkNotify(ctx, id, true)} }
+}
+
+// markNotifyCmd — «u» на уведе: прочитать (read=true) или вернуть непрочитанным.
+func (m Model) markNotifyCmd(id string, read bool) tea.Cmd {
+	api, ctx := m.api, m.ctx
+	return func() tea.Msg { return readMsg{err: api.MarkNotify(ctx, id, read)} }
+}
+
+// notifyMoreCmd — курсор подошёл к концу списка уведов: догрузить старые
+// страницы. Один запрос за раз: пока грузится и при активном фильтре — тишина.
+func (m *Model) notifyMoreCmd() tea.Cmd {
+	if m.tab != tabNotify || m.filter != "" || m.notifyLoading ||
+		m.api.NotifyDone() || len(m.notify) == 0 || m.cursor < len(m.notify)-3 {
+		return nil
+	}
+	m.notifyLoading = true
+	api, ctx := m.api, m.ctx
+	return func() tea.Msg {
+		n, err := api.NotifyOlder(ctx)
+		return notifyOlderMsg{added: n, err: err}
+	}
 }
 
 // mouseClick — клик открывает элемент списка (колесо — отдельное событие).
@@ -1003,6 +1053,20 @@ func (m Model) mouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 // wheel: над диалогом — скролл истории, над списком — курсор.
 func (m Model) mouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 	up := msg.Button == tea.MouseWheelUp
+	if m.tab == tabNotify {
+		// уведы: колесо двигает курсор по списку; скрытую историю чата
+		// не скроллим даже при открытом диалоге
+		if up {
+			if m.cursor > 0 {
+				m.cursor--
+			}
+			return m, m.notifyMoreCmd()
+		}
+		if m.cursor < m.visibleCount()-1 {
+			m.cursor++
+		}
+		return m, m.notifyMoreCmd()
+	}
 	if m.taskOpen && m.tab == tabTasks {
 		// экран задачи: правая панель — история чата, левая — описание
 		if m.active != nil && msg.X > m.cardW+4 {
@@ -1164,6 +1228,9 @@ func (m Model) mouseLeft(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		m.drag = &boardDrag{taskID: rows[idx].task.ID, fromCol: col, toCol: col, wasSel: wasSel}
 		return m, nil
 	case tabNotify:
+		if msg.X >= m.notifyListW()+4 {
+			return m, nil // клик по превью справа: ничего не открываем
+		}
 		vn := m.visibleNotify()
 		start, _ := m.notifyWindow(len(vn))
 		idx := (msg.Y - 2 - m.filterRows()) / 2
@@ -1239,14 +1306,33 @@ func (m *Model) visibleNotify() []NotifyItem {
 	return out
 }
 
-// clearNotifyUnread — погасить Unread в полном списке по ID: индекс
+// setNotifyUnread — выставить Unread в полном списке по ID: индекс
 // отфильтрованного списка не совпадает с исходным.
-func (m *Model) clearNotifyUnread(id string) {
+func (m *Model) setNotifyUnread(id string, unread bool) {
 	for i := range m.notify {
 		if m.notify[i].ID == id {
-			m.notify[i].Unread = false
+			m.notify[i].Unread = unread
 			return
 		}
+	}
+}
+
+// clearNotifyUnread — погасить Unread в полном списке по ID.
+func (m *Model) clearNotifyUnread(id string) {
+	m.setNotifyUnread(id, false)
+}
+
+// clearNewComments — погасить бейдж новых комментариев задачи: в списке
+// и в открытой карточке (портальная сторона гасится im.dialog.read).
+func (m *Model) clearNewComments(taskID int64) {
+	for i := range m.tasks {
+		if m.tasks[i].ID == taskID {
+			m.tasks[i].NewComments = 0
+			break
+		}
+	}
+	if m.taskCard.ID == taskID {
+		m.taskCard.NewComments = 0
 	}
 }
 
@@ -1285,6 +1371,24 @@ func (m *Model) openTaskChatInline(id string) {
 	m.active = &Chat{DialogID: id, Title: "чат " + id}
 	m.reply.SetValue(m.drafts[id])
 	m.openHistory()
+}
+
+// syncTaskChat — правая панель экрана задачи показывает только чат этой
+// задачи: чужой диалог (открыли на вкладке чатов) заменяем на чат задачи,
+// сохранив его черновик. Синхронизация только на вкладке задач: чужой
+// диалог на других вкладках не трогаем.
+func (m *Model) syncTaskChat() tea.Cmd {
+	if m.tab != tabTasks || !m.twoPane() || m.taskCard.ChatID <= 0 {
+		return nil
+	}
+	id := taskChatDialog(m.taskCard.ChatID)
+	if m.active != nil && m.active.DialogID == id {
+		return nil
+	}
+	m.saveDraft()
+	m.openTaskChatInline(id)
+	m.active.Title = "чат задачи"
+	return m.historyCmd(id, 0)
 }
 
 func (m *Model) openChatByDialog(id string) {
@@ -1374,9 +1478,10 @@ func mergeHistory(old, fresh []Message) []Message {
 }
 
 // renderHistory — tele-стиль: подряд идущие сообщения одного автора
-// группируются (имя один раз), свои — прижаты вправо, даты по центру.
-// Выделенному (sel) — маркер в колонке отступа (у своих — в колонке 0),
-// сообщениям — цитата ответа и сердечки лайков. потолок: prepend-догрузка
+// группируются (имя один раз, между сообщениями пустая строка),
+// свои — той же раскладкой с именем акцентом, даты по центру.
+// Выделенному (sel) — маркер в колонке отступа, сообщениям — цитата
+// ответа и сердечки лайков. потолок: prepend-догрузка
 // может слить две серии одного автора на границе — сдвиг скролла на 1–2
 // строки, приемлемо.
 func (m *Model) renderHistory() {
@@ -1461,58 +1566,21 @@ func (m *Model) renderHistory() {
 				line++
 			}
 		case g.mine:
-			// свои сообщения прижаты вправо: перенос по словам на 2/3 ширины,
-			// правый край строки на колонке W; время и «›» — в конце последней
-			// строки первого сообщения группы; у выделенного маркер в колонке 0
-			tw := W * 2 / 3
-			if lim := W - 4; tw > lim {
-				tw = lim
+			// свои — той же раскладкой, что чужие: имя + текст ниже, текст
+			// обычным цветом (белым). Отличие — имя акцентом; правое
+			// прижатие убрано: тёмная плашка была нечитаема.
+			name := g.name
+			if name == "" {
+				name = "я"
 			}
-			if tw < 1 {
-				tw = 1
-			}
+			b.WriteString(stAccent.Render(name) + stDim.Render(" "+first.Time) + "\n")
+			line++
 			for i, hm := range g.msgs {
-				m.msgLine[hm.msg.ID] = line
-				edge := W
-				mark := ""
-				if hm.idx == m.sel {
-					edge -= 2 // место под «▌ » в колонке 0
-					mark = stCursor.Render("▌") + " "
-				}
-				tail, wrapW := "", tw
-				if i == 0 {
-					tail = stDim.Render("  "+hm.msg.Time) + " " + stAccent.Render("›")
-					// хвост должен остаться в пределах края — учитываем при переносе
-					if lim := edge - lipgloss.Width(tail); wrapW > lim {
-						wrapW = lim
-					}
-					if wrapW < 1 {
-						wrapW = 1
-					}
-				}
-				var lines []string
-				if q := m.quoteLine(hm.msg, wrapW); q != "" {
-					lines = append(lines, q)
-				}
-				wrapped := strings.Split(wordwrap.String(hm.msg.Text, wrapW), "\n")
-				for j, bl := range wrapped {
-					l := stBubbleMine.Render(bl)
-					if j == len(wrapped)-1 {
-						l += tail
-					}
-					lines = append(lines, l)
-				}
-				if h := hearts(hm.msg); h != "" {
-					lines = append(lines, h) // сердечки — справа под сообщением
-				}
-				for _, l := range lines {
-					pad := edge - lipgloss.Width(l)
-					if pad < 0 {
-						pad = 0
-					}
-					b.WriteString(mark + strings.Repeat(" ", pad) + l + "\n")
+				if i > 0 {
+					b.WriteString("\n")
 					line++
 				}
+				writeMsg(hm, "", hm.msg.Text+hearts(hm.msg))
 			}
 		default:
 			name := g.name
@@ -1522,7 +1590,11 @@ func (m *Model) renderHistory() {
 			b.WriteString(authorStyle(g.author).Render(name) +
 				stDim.Render(" "+first.Time) + "\n")
 			line++
-			for _, hm := range g.msgs {
+			for i, hm := range g.msgs {
+				if i > 0 {
+					b.WriteString("\n")
+					line++
+				}
 				text := hm.msg.Text + hearts(hm.msg)
 				if hm.msg.MentionsMe {
 					text = stBold.Render(text) // упомянули меня — жирным

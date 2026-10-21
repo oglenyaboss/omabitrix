@@ -394,14 +394,25 @@ func execAll(c tea.Cmd) {
 	}
 }
 
-// Мета-строка карточки: срок-просрочка плашкой, автор, бейдж комментариев.
+// Мета-строка карточки: срок-просрочка плашкой, автор. Бейдж комментариев
+// гаснет при входе в карточку (вход = просмотр задачи, как в вебе), поэтому
+// проверяем его на доске ДО входа.
 func TestCardMetaLine(t *testing.T) {
 	tasks, _ := taskFixture(3)
 	m := boardModel(tasks) // сейчас 19 окт 12:00, срок 18:00 сегодня
+	if s := ansi.Strip(m.View().Content); !strings.Contains(s, "✎ 2") {
+		t.Fatalf("на доске нет бейджа новых комментариев:\n%s", s)
+	}
 	m = openCard(m, tasks[0])
 	s := ansi.Strip(m.View().Content)
-	if !strings.Contains(s, "сегодня 18:00") || !strings.Contains(s, "от Лёня") || !strings.Contains(s, "✎ 2") {
+	if !strings.Contains(s, "сегодня 18:00") || !strings.Contains(s, "от Лёня") {
 		t.Fatalf("меты нет в карточке:\n%s", s)
+	}
+	if strings.Contains(s, "✎") {
+		t.Fatalf("бейдж не погас при входе в карточку:\n%s", s)
+	}
+	if m.tasks[0].NewComments != 0 || m.taskCard.NewComments != 0 {
+		t.Fatalf("счётчик не обнулён: %+v", m.tasks[0])
 	}
 	if strings.Contains(s, "статус:") {
 		t.Fatalf("строка статуса осталась в карточке:\n%s", s)
@@ -528,5 +539,81 @@ func TestTaskScreenMouseFocus(t *testing.T) {
 	m5 := mm.(Model)
 	if m5.descOff != 3 || m5.cursor != m4.cursor {
 		t.Fatalf("колесо над карточкой: descOff=%d cursor=%d", m5.descOff, m5.cursor)
+	}
+}
+
+// Чат, открытый на вкладке чатов, не протекает в экран задачи: «2» возвращает
+// чат задачи, черновик чужого диалога сохранён, чужого титула в кадре нет.
+func TestTaskScreenKeepsTaskChatAfterTabHop(t *testing.T) {
+	m := taskScreen(120, 36, 3)
+	if m.active == nil || m.active.DialogID != "chat7" {
+		t.Fatalf("исходно не чат задачи: %+v", m.active)
+	}
+	m.chats = []Chat{{DialogID: "d0", Title: "Анна"}}
+	m.active = &m.chats[0]
+	m.tab = tabChats
+	m.reply.SetValue("черновик")
+	m2, cmd := keyPress(m, "2")
+	if m2.active == nil || m2.active.DialogID != "chat7" {
+		t.Fatalf("«2» не вернул чат задачи: %+v", m2.active)
+	}
+	if m2.drafts["d0"] != "черновик" {
+		t.Fatalf("черновик чужого диалога потерян: %q", m2.drafts["d0"])
+	}
+	if cmd == nil {
+		t.Fatal("«2» не перечитал историю чата задачи")
+	}
+	if s := ansi.Strip(m2.View().Content); strings.Contains(s, "Анна") {
+		t.Fatalf("чужой диалог в панели задачи:\n%s", s)
+	}
+}
+
+// Карточка загрузилась в узком окне при активном чужом диалоге: чат задачи
+// не открывается; расширение окна перепривязывает чат задачи.
+func TestTaskScreenRebindsChatOnWiden(t *testing.T) {
+	tasks, _ := taskFixture(3)
+	chats := []Chat{{DialogID: "d0", Title: "Анна"}}
+	m := viewModel(80, 36, chats, tasks, nil, &chats[0], nil)
+	m.tab = tabTasks
+	m.cursor, m.taskIdx = 0, 0
+	m.cardReq = 1
+	mm, cmd := m.Update(taskCardMsg{requested: 1, task: tasks[0]})
+	m2 := mm.(Model)
+	if m2.active == nil || m2.active.DialogID != "d0" {
+		t.Fatalf("узкое окно тронуло чужой диалог: %+v", m2.active)
+	}
+	mm, cmd = m2.Update(tea.WindowSizeMsg{Width: 120, Height: 36})
+	m3 := mm.(Model)
+	if m3.active == nil || m3.active.DialogID != "chat7" {
+		t.Fatalf("расширение не перепривязало чат задачи: %+v", m3.active)
+	}
+	if cmd == nil {
+		t.Fatal("расширение не перечитало историю чата задачи")
+	}
+}
+
+// Чужой активный диалог: панель задачи показывает заглушку, а не чужой чат.
+func TestTaskChatPaneHidesForeignDialog(t *testing.T) {
+	m := taskScreen(120, 36, 3)
+	m.active = &Chat{DialogID: "d0", Title: "Анна"}
+	s := ansi.Strip(m.taskChatPane())
+	if strings.Contains(s, "Анна") {
+		t.Fatalf("чужой диалог в панели задачи:\n%s", s)
+	}
+	if !strings.Contains(s, "открыть чат задачи") {
+		t.Fatalf("нет подсказки открыть чат задачи:\n%s", s)
+	}
+}
+
+// Уход с экрана задачи на вкладку уведомлений: без команды синхронизации,
+// активный диалог не тронут.
+func TestTabHopAwayFromTasksLeavesChat(t *testing.T) {
+	m := taskScreen(120, 36, 3)
+	m2, cmd := keyPress(m, "4")
+	if cmd != nil {
+		t.Fatal("уход на уведомления дал команду синхронизации")
+	}
+	if m2.tab != tabNotify || m2.active == nil || m2.active.DialogID != "chat7" {
+		t.Fatalf("«4» тронул диалог: tab=%v active=%+v", m2.tab, m2.active)
 	}
 }

@@ -32,6 +32,7 @@ type keyMap struct {
 	Delete     key.Binding // D на выделенном
 	Like       key.Binding // l на выделенном
 	Mention    key.Binding // @ на выделенном
+	Copy       key.Binding // y на выделенном
 	Send       key.Binding // enter в ответе
 	Cancel     key.Binding // esc в ответе
 	Older      key.Binding // H
@@ -47,6 +48,7 @@ type keyMap struct {
 	Role       key.Binding // t — роль доски
 	Project    key.Binding // p — проект доски
 	ReadAll    key.Binding // A
+	MarkRead   key.Binding // u — прочитано/непрочитано на уведе
 	Browser    key.Binding // o
 }
 
@@ -159,6 +161,10 @@ var km = keyMap{
 		key.WithKeys("@"),
 		key.WithHelp("@", "упомянуть"),
 	),
+	Copy: key.NewBinding(
+		key.WithKeys("y"),
+		key.WithHelp("y", "копировать"),
+	),
 	Send: key.NewBinding(
 		key.WithKeys("enter"),
 		key.WithHelp("enter", "отправить"),
@@ -223,6 +229,10 @@ var km = keyMap{
 		key.WithKeys("A"),
 		key.WithHelp("A", "всё прочитано"),
 	),
+	MarkRead: key.NewBinding(
+		key.WithKeys("u"),
+		key.WithHelp("u", "прочитано ⇄ нет"),
+	),
 }
 
 // shortHelp — контекстный набор для футера, «?» — в конце каждого набора.
@@ -236,13 +246,13 @@ func (m Model) shortHelp() []key.Binding {
 		// чат задачи открыт справа — подсказки экрана задачи важнее
 		return []key.Binding{km.StageMove, km.Status, km.Deadline, km.ReplyField, km.TaskChat, km.Browser, km.Quit, km.Help}
 	case m.sel >= 0:
-		return []key.Binding{km.ReplyQuote, km.Edit, km.Delete, km.Like, km.Mention, km.Cancel, km.Help}
+		return []key.Binding{km.ReplyQuote, km.Copy, km.Edit, km.Delete, km.Like, km.Mention, km.Cancel, km.Help}
 	case m.active != nil:
 		return []key.Binding{km.Reply, km.Select, km.Older, km.Search, km.PageUp, km.PageDown, km.Back, km.Help}
 	case m.tab == tabTasks:
 		return []key.Binding{km.ColLeft, km.Down, km.StageMove, km.Open, km.Role, km.Project, km.Filter, km.Help}
 	case m.tab == tabNotify:
-		return []key.Binding{km.Open, km.ReadAll, km.Refresh, km.Help}
+		return []key.Binding{km.Open, km.MarkRead, km.ReadAll, km.Browser, km.Refresh, km.Help}
 	case m.tab == tabHome:
 		return []key.Binding{km.NextDue, km.Tab2, km.Tab3, km.Tab4, km.Refresh, km.Help}
 	default:
@@ -258,11 +268,11 @@ func (m Model) fullHelp() [][]key.Binding {
 		// вкладки
 		{km.Tab1, km.Tab2, km.Tab3, km.Tab4, km.NextTab, km.PrevTab},
 		// чаты (r — ответить, на выделенном — с цитатой)
-		{km.Select, km.ReplyQuote, km.Edit, km.Delete, km.Like, km.Mention, km.Send, km.Cancel, km.Older, km.Search},
+		{km.Select, km.ReplyQuote, km.Copy, km.Edit, km.Delete, km.Like, km.Mention, km.Send, km.Cancel, km.Older, km.Search},
 		// задачи
 		{km.NextDue, km.StageMove, km.Status, km.Deadline, km.TaskChat, km.Reply, km.ColLeft, km.ColRight, km.Role, km.Project},
 		// уведы
-		{km.ReadAll},
+		{km.MarkRead, km.ReadAll},
 		// общее
 		{km.Filter, km.Refresh, km.Browser, km.Back, km.Quit, km.ForceQuit, km.Help},
 	}

@@ -564,7 +564,9 @@ func (m Model) boardCard(r taskRow, sel bool, innerW int) []string {
 		due = stFaint.Render("без срока")
 	}
 	if r.task.NewComments > 0 {
-		badge := stBadge.Render("✎ " + fmt.Sprint(r.task.NewComments))
+		// пульсируем как «сегодня»: новые комментарии должны цеплять глаз
+		badge := lipgloss.NewStyle().Bold(true).Foreground(pulseColor(m.frame)).
+			Render("✎ " + fmt.Sprint(r.task.NewComments))
 		gap := cardW - lipgloss.Width(due) - lipgloss.Width(badge)
 		if gap < 1 {
 			gap = 1

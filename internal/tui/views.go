@@ -56,7 +56,7 @@ func (m Model) tabBar() string {
 		{tabHome, "пульт", 0},
 		{tabTasks, "задачи", m.myOpenCount()},
 		{tabChats, "чаты", m.unreadChats()},
-		{tabNotify, "уведы", countUnread(m.notify)},
+		{tabNotify, "уведы", m.notifyBadge()},
 	}
 	for i, t := range tabs {
 		if t.t == m.tab {
@@ -590,16 +590,23 @@ func (m Model) cardMetaLine() string {
 		parts = append(parts, stDim.Render("от "+t.CreatorName))
 	}
 	if t.NewComments > 0 {
-		parts = append(parts, stBadge.Render("✎ "+fmt.Sprint(t.NewComments)))
+		parts = append(parts, lipgloss.NewStyle().Bold(true).Foreground(pulseColor(m.frame)).
+			Render("✎ "+fmt.Sprint(t.NewComments)))
 	}
 	return strings.Join(parts, "  ")
 }
 
 // taskChatPane — правая панель экрана задачи: чат задачи или заглушка.
+// Чужой активный диалог (открыли на вкладке чатов) не рендерим — только
+// подсказка, как вернуть чат задачи.
 func (m Model) taskChatPane() string {
-	if m.taskCard.ChatID <= 0 || m.active == nil {
+	if m.taskCard.ChatID <= 0 {
 		return box(paneTitle("", "чат задачи", "", false),
 			[]string{"", stDim.Render("у задачи нет чата")}, m.dialW, false)
+	}
+	if m.active == nil || m.active.DialogID != taskChatDialog(m.taskCard.ChatID) {
+		return box(paneTitle("", "чат задачи", "", false),
+			[]string{"", stDim.Render("c — открыть чат задачи")}, m.dialW, false)
 	}
 	return m.dialogPane()
 }
@@ -659,10 +666,61 @@ func statusName(code string) string {
 
 // ---- уведы
 
+// notifyBadge — счётчик вкладки уведов: серверный (total_unread_count), когда
+// данные уже приходили с портала; иначе локальный по списку (тесты).
+func (m Model) notifyBadge() int {
+	if !m.api.notifyAt.IsZero() {
+		return m.api.NotifyUnread()
+	}
+	return countUnread(m.notify)
+}
+
+// notifyWide — широкий экран уведов: слева список, справа превью.
+func (m Model) notifyWide() bool { return m.width >= 100 }
+
+// notifyListW — внутренняя ширина списка уведов (широкий экран — левая панель).
+func (m Model) notifyListW() int {
+	if m.notifyWide() {
+		return (m.width-1)*11/20 - 4
+	}
+	return m.width - 4
+}
+
+// notifyPreviewW — внутренняя ширина панели превью (широкий экран).
+func (m Model) notifyPreviewW() int {
+	left := (m.width - 1) * 11 / 20
+	return m.width - left - 1 - 4
+}
+
+// notifyGlyph — значок модуля уведа.
+func notifyGlyph(n NotifyItem) string {
+	switch n.Module {
+	case "tasks":
+		return "󰄬"
+	case "calendar":
+		return "󰃭"
+	case "disk":
+		return "󰋊"
+	}
+	return "󰅎"
+}
+
+// notifyName — кто в строке списка: автор, затем заголовок, затем текст.
+func notifyName(n NotifyItem) string {
+	switch {
+	case n.Author != "":
+		return n.Author
+	case n.Title != "":
+		return n.Title
+	default:
+		return n.Text
+	}
+}
+
 func (m Model) viewNotify() string {
 	rows := m.visibleNotify()
 	start, end := m.notifyWindow(len(rows))
-	out := make([]string, 0, (end-start)*2+2)
+	out := make([]string, 0, (end-start)*2+3)
 	if m.filterRows() > 0 {
 		out = append(out, m.filterLine()...)
 	}
@@ -672,8 +730,22 @@ func (m Model) viewNotify() string {
 	for i := start; i < end; i++ {
 		out = append(out, m.notifyRows(rows[i], i == m.cursor)...)
 	}
-	title := paneTitle("", "уведы", unreadExtra(countUnread(m.notify)), m.tab == tabNotify)
-	return box(title, out, m.width-4, m.tab == tabNotify)
+	if m.notifyLoading {
+		out = append(out, stDim.Render("  загрузка…"))
+	}
+	if m.notifyWide() {
+		// панель полной высоты, как карточка на экране задачи — иначе рамки
+		// превью и списка разъезжаются; на узком экране — как раньше
+		for len(out) < max(m.bodyH-2, 4) {
+			out = append(out, "")
+		}
+	}
+	title := paneTitle("", "уведы", unreadExtra(m.notifyBadge()), m.tab == tabNotify)
+	list := box(title, out, m.notifyListW(), m.tab == tabNotify)
+	if !m.notifyWide() {
+		return list
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, list, " ", m.notifyPreview(m.notifyPreviewW()))
 }
 func countUnread(rows []NotifyItem) int {
 	n := 0
@@ -701,51 +773,116 @@ func (m Model) notifyWindow(n int) (start, end int) {
 	return start, end
 }
 
-// notifyRows — две строки на увед: глиф+титул+время; текст dim.
+// notifyRows — две строки на увед: автор (или заголовок/текст) + время;
+// вторая строка — текст (или заголовок, если он не ушёл в первую). Выбранный
+// увед — имя акцентом, непрочитанный — цветом и точкой перед временем.
 func (m Model) notifyRows(n NotifyItem, selected bool) []string {
-	inner := m.width - 4
-	glyph := "󰅎"
-	switch n.Module {
-	case "tasks":
-		glyph = "󰄬"
-	case "calendar":
-		glyph = "󰃭"
-	case "disk":
-		glyph = "󰋊"
-	}
-	title := n.Title
-	if title == "" {
-		title = n.Text
-	}
-	titleSt := lipgloss.NewStyle()
+	inner := m.notifyListW()
+	name := notifyName(n)
+	nameSt := lipgloss.NewStyle()
 	if n.Unread {
-		titleSt = stChatUnread
+		nameSt = stChatUnread
 	}
 	if selected {
-		titleSt = stTitle
+		nameSt = stTitle
 	}
-	t := titleSt.Render(truncate(title, inner-12))
+	t := nameSt.Render(truncate(name, max(inner-12, 1)))
 	marker := " "
 	if selected {
 		marker = stCursor.Render("▌")
 	}
-	gap := inner - 3 - lipgloss.Width(t) - lipgloss.Width(n.Time)
+	right := ""
+	if n.Unread {
+		right += stBadge.Render("•") + " "
+	}
+	right += stDim.Render(n.Time)
+	gap := inner - 3 - lipgloss.Width(t) - lipgloss.Width(right)
 	if gap < 1 {
 		gap = 1
 	}
-	line1 := marker + glyph + " " + t + strings.Repeat(" ", gap) + stDim.Render(n.Time)
-	body := ""
-	if n.Text != "" && n.Text != title {
-		body = stDim.Render("   " + truncate(n.Text, inner-4))
+	line1 := marker + notifyGlyph(n) + " " + t + strings.Repeat(" ", gap) + right
+	body := n.Text
+	if n.Title != "" && n.Title != name {
+		body = n.Title
 	}
-	return []string{line1, body}
+	line2 := ""
+	if body != "" && body != name {
+		// одна строка: переводы строк текста — в пробел (высота ряда = 2)
+		line2 = stDim.Render("   " + truncate(strings.ReplaceAll(body, "\n", " "), max(inner-4, 1)))
+	}
+	return []string{line1, line2}
+}
+
+// notifyPreview — правая панель уведов на широком экране: полный текст без
+// обрезки, полная дата и подсказки клавиш. Высота — как у списка (тот же
+// window math), короткий контент добивается пустыми строками.
+func (m Model) notifyPreview(w int) string {
+	rows := m.visibleNotify()
+	contentH := max(m.bodyH-2, 4)
+	pad := func(lines []string) []string {
+		for len(lines) < contentH {
+			lines = append(lines, "")
+		}
+		if len(lines) > contentH {
+			lines = lines[:contentH]
+		}
+		return lines
+	}
+	title := paneTitle("", "увед", "", false)
+	if m.cursor < 0 || m.cursor >= len(rows) {
+		return box(title, pad([]string{"", stDim.Render("—")}), w, false)
+	}
+	n := rows[m.cursor]
+	label := n.Module
+	switch n.Module {
+	case "tasks":
+		label = "задача"
+	case "calendar":
+		label = "календарь"
+	}
+	lines := []string{
+		stTitle.Render(notifyGlyph(n) + " " + truncate(notifyName(n), max(w-2, 1))),
+		stDim.Render(truncate(n.Date+" · "+label, max(w-2, 1))),
+		"",
+	}
+	if n.Title != "" {
+		lines = append(lines, stTitle.Render(truncate(n.Title, max(w-2, 1))))
+	}
+	hints := []string{stDim.Render("u — " + hintNotifyRead(n.Unread))}
+	if n.TaskID > 0 {
+		hints = append([]string{stDim.Render("enter — открыть задачу")}, hints...)
+	} else if n.URL != "" {
+		hints = append([]string{stDim.Render("enter — открыть в браузере")}, hints...)
+	}
+	// текст: перенос по словам, окно по высоте; обрезано — «…» в конце
+	if avail := contentH - len(lines) - len(hints) - 1; avail > 0 && n.Text != "" {
+		wrapped := strings.Split(wordwrap.String(n.Text, max(w-2, 1)), "\n")
+		if len(wrapped) > avail {
+			wrapped = wrapped[:avail]
+			last := strings.TrimRight(wrapped[len(wrapped)-1], " ")
+			wrapped[len(wrapped)-1] = truncate(last+" …", max(w-2, 1))
+		}
+		lines = append(lines, wrapped...)
+	}
+	lines = append(lines, "")
+	lines = append(lines, hints...)
+	return box(title, pad(lines), w, false)
+}
+
+// hintNotifyRead — подпись клавиши u для текущего состояния.
+func hintNotifyRead(unread bool) string {
+	if unread {
+		return "отметить прочитанным"
+	}
+	return "отметить непрочитанным"
 }
 
 // ---- help
 
 func (m Model) viewHelp() string {
 	h := m.help
-	h.SetWidth(m.width - 4) // узкий терминал: колонки обрежутся с «…»
+	// оверлей не в коробке: поля по 1 с боков (колонка уведов с «u» впритык)
+	h.SetWidth(m.width - 2) // узкий терминал: колонки обрежутся с «…»
 	return "\n" + stTitle.Render("  хоткеи") + "\n\n" +
 		h.FullHelpView(m.fullHelp()) + "\n\n" + stDim.Render("  любая клавиша — назад")
 }

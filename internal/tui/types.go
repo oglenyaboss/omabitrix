@@ -5,12 +5,15 @@ package tui
 type Chat struct {
 	DialogID string
 	ChatID   int64 // числовой id чата (поиск, реакции); у личных диалогов может быть 0
-	Title    string
-	Counter  int
-	Preview  string
-	Time     string // готовая метка HH:MM / DD.MM
-	Stamp    int64  // unix ms последнего сообщения, для сортировки
-	Online   bool
+	// ParentChatID — системный чат коллаба, когда диалог перепривязан к под-чату:
+	// по нему раскладываются непрочитанные из im.counters.get (CHANNEL_COMMENT).
+	ParentChatID int64
+	Title        string
+	Counter      int
+	Preview      string
+	Time         string // готовая метка HH:MM / DD.MM
+	Stamp        int64  // unix ms последнего сообщения, для сортировки
+	Online       bool
 }
 
 // Message — строка истории диалога (регулярная или системная).
@@ -32,14 +35,18 @@ type Message struct {
 
 // NotifyItem — системное уведомление im.notify.get.
 type NotifyItem struct {
-	ID     string
-	Module string
-	Title  string
-	Text   string
-	Time   string
-	Unread bool
-	Stamp  int64
-	TaskID int64 // увед-тег TASKS|TASK|<id>: enter откроет карточку
+	ID       string
+	Module   string
+	Title    string
+	Text     string
+	Time     string
+	Unread   bool
+	Stamp    int64
+	TaskID   int64  // увед-тег TASKS|TASK|<id>: enter откроет карточку
+	AuthorID int64  // author_id из ответа
+	Author   string // имя автора из users[] ответа; "" если автора там нет
+	URL      string // первая [URL=…] из текста; у задач — из params.COMPONENT_PARAMS.SUBJECT
+	Date     string // полная дата «02.01.2006 15:04» в локальной зоне
 }
 
 // Task — карточка задачи.

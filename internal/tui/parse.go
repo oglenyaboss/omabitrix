@@ -20,6 +20,10 @@ var bbRe = regexp.MustCompile(`\[[^\]]*\]`)
 // mentionRe — упоминание в тексте: [USER=75]Имя[/USER], [user=all]Все[/user].
 var mentionRe = regexp.MustCompile(`(?i)\[USER=(\d+|all)\](.*?)\[/USER\]`)
 
+// taskRefRe — номер задачи в тексте уведа: [#15947] → #15947, до StripBB
+// (иначе номер исчезает вместе с BB-скобками и остаётся двойной пробел).
+var taskRefRe = regexp.MustCompile(`\[#(\d+)\]`)
+
 // applyMentions: упоминания → @Имя (до StripBB); true — упомянут я (мой id или all).
 func applyMentions(text string, myID int64) (string, bool) {
 	me := false
@@ -49,6 +53,19 @@ func FmtTime(iso string, now time.Time) string {
 		return t.Format("15:04")
 	}
 	return t.Format("02.01")
+}
+
+// ShiftISO — метка портала, приведённая к часам ПК: все даты в ответах
+// прошиты серверными часами, time.start того же ответа — тоже; сдвиг на
+// skew (местное − серверное) убирает перекос серверных часов.
+func ShiftISO(iso string, skew time.Duration) string {
+	if skew == 0 || iso == "" {
+		return iso
+	}
+	if t, err := time.Parse(time.RFC3339, iso); err == nil {
+		return t.Add(skew).Format(time.RFC3339)
+	}
+	return iso
 }
 
 // DayInfo: ключ дня и подпись-разделитель (сегодня/вчера/DD.MM).
@@ -89,8 +106,9 @@ type rawRecentItem struct {
 	Title   string     `json:"title"`
 	Counter int        `json:"counter"`
 	Message *struct {
-		Text string `json:"text"`
-		Date string `json:"date"`
+		Text   string  `json:"text"`
+		Date   string  `json:"date"`
+		ChatID FlexInt `json:"chat_id"` // под-чат, где реально лежит сообщение (коллабы)
 	} `json:"message"`
 	User *struct {
 		Status string `json:"status"`
@@ -133,7 +151,8 @@ func (f *FlexString) UnmarshalJSON(b []byte) error {
 }
 
 // ChatsFrom — im.recent.list → чаты, отсортированные: непрочитанные вверх, дальше по свежести.
-func ChatsFrom(raw []byte, now time.Time) []Chat {
+// skew — перекос серверных часов (см. ShiftISO).
+func ChatsFrom(raw []byte, now time.Time, skew time.Duration) []Chat {
 	var res rawRecentResult
 	_ = json.Unmarshal(raw, &res)
 	now = now.Local()
@@ -147,13 +166,24 @@ func ChatsFrom(raw []byte, now time.Time) []Chat {
 			continue // битый элемент портала
 		}
 		c := Chat{DialogID: dlg, ChatID: int64(it.ChatID), Title: it.Title, Counter: it.Counter}
+		// коллаб: строка recent — системный чат коллаба (вступил/покинул проект),
+		// живая переписка — в под-чате (чат задачи); message.chat_id указывает
+		// на него. Открываем и отвечаем там, где реально идёт разговор.
+		if it.ChatID > 0 && it.Message != nil && it.Message.ChatID > 0 &&
+			int64(it.Message.ChatID) != int64(it.ChatID) {
+			sub := int64(it.Message.ChatID)
+			c.DialogID = "chat" + strconv.FormatInt(sub, 10)
+			c.ChatID = sub
+			c.ParentChatID = int64(it.ChatID)
+		}
 		if c.Title == "" {
 			c.Title = dlg
 		}
 		if it.Message != nil {
 			c.Preview = StripBB(it.Message.Text)
-			c.Time = FmtTime(it.Message.Date, now)
-			if t, err := time.Parse(time.RFC3339, it.Message.Date); err == nil {
+			date := ShiftISO(it.Message.Date, skew)
+			c.Time = FmtTime(date, now)
+			if t, err := time.Parse(time.RFC3339, date); err == nil {
 				c.Stamp = t.UnixMilli()
 			}
 		}
@@ -162,13 +192,19 @@ func ChatsFrom(raw []byte, now time.Time) []Chat {
 		}
 		out = append(out, c)
 	}
+	sortChats(out)
+	return out
+}
+
+// sortChats — непрочитанные вверх, дальше по свежести (после докладки
+// коллаб-непрочитанных из im.counters.get вызывается повторно из API.Chats).
+func sortChats(out []Chat) {
 	sort.SliceStable(out, func(i, j int) bool {
 		if (out[i].Counter > 0) != (out[j].Counter > 0) {
 			return out[i].Counter > 0
 		}
 		return out[i].Stamp > out[j].Stamp
 	})
-	return out
 }
 
 type rawMsg struct {
@@ -230,7 +266,7 @@ type rawUserV2 struct {
 
 // MessagesFrom — im.dialog.messages.get → строки от свежих к старым (reverse ответа),
 // системные (author_id=0) помечены, удалённые выброшены.
-func MessagesFrom(raw []byte, myID int64, now time.Time) []Message {
+func MessagesFrom(raw []byte, myID int64, now time.Time, skew time.Duration) []Message {
 	var res rawDialogResult
 	_ = json.Unmarshal(raw, &res)
 	users := map[int64]string{}
@@ -245,13 +281,14 @@ func MessagesFrom(raw []byte, myID int64, now time.Time) []Message {
 			continue
 		}
 		text, mentionsMe := applyMentions(m.Text, myID)
-		day, label := DayInfo(m.Date, now)
+		date := ShiftISO(m.Date, skew)
+		day, label := DayInfo(date, now)
 		out = append(out, Message{
 			ID:         int64(m.ID),
 			AuthorID:   int64(m.AuthorID),
 			Name:       users[int64(m.AuthorID)],
 			Text:       StripBB(text),
-			Time:       FmtTime(m.Date, now),
+			Time:       FmtTime(date, now),
 			DayKey:     day,
 			DayLabel:   label,
 			Mine:       int64(m.AuthorID) == myID,
@@ -283,7 +320,7 @@ type rawSearchResult struct {
 }
 
 // SearchFrom — im.dialog.messages.search → найденные, как пришли (свежие первыми).
-func SearchFrom(raw []byte, myID int64, now time.Time) []Message {
+func SearchFrom(raw []byte, myID int64, now time.Time, skew time.Duration) []Message {
 	var res rawSearchResult
 	_ = json.Unmarshal(raw, &res)
 	users := map[int64]string{}
@@ -295,13 +332,14 @@ func SearchFrom(raw []byte, myID int64, now time.Time) []Message {
 	for _, m := range res.Messages {
 		ps := parseMsgParams(m.Params)
 		text, mentionsMe := applyMentions(m.Text, myID)
-		day, label := DayInfo(m.Date, now)
+		date := ShiftISO(m.Date, skew)
+		day, label := DayInfo(date, now)
 		out = append(out, Message{
 			ID:         int64(m.ID),
 			AuthorID:   int64(m.AuthorID),
 			Name:       users[int64(m.AuthorID)],
 			Text:       StripBB(text),
-			Time:       FmtTime(m.Date, now),
+			Time:       FmtTime(date, now),
 			DayKey:     day,
 			DayLabel:   label,
 			Mine:       int64(m.AuthorID) == myID,
@@ -316,36 +354,69 @@ func SearchFrom(raw []byte, myID int64, now time.Time) []Message {
 }
 
 type rawNotify struct {
-	ID          string `json:"id"`
-	Module      string `json:"notify_module"`
-	NotifyTitle string `json:"notify_title"`
-	Tag         string `json:"notify_tag"`
-	Text        string `json:"text"`
-	Date        string `json:"date"`
-	NotifyRead  string `json:"notify_read"`
+	// id: живой портал шлёт числом, коробки/старые фикстуры — строкой.
+	ID          FlexString `json:"id"`
+	Module      string     `json:"notify_module"`
+	NotifyTitle string     `json:"notify_title"`
+	Tag         string     `json:"notify_tag"`
+	Text        string     `json:"text"`
+	Date        string     `json:"date"`
+	NotifyRead  string     `json:"notify_read"`
+	AuthorID    FlexInt    `json:"author_id"`
+	// params: null у calendar, object у задач (шаблон темы с URL карточки)
+	Params *struct {
+		ComponentParams *struct {
+			Subject string `json:"SUBJECT"`
+		} `json:"COMPONENT_PARAMS"`
+	} `json:"params"`
 }
 
 type rawNotifyResult struct {
 	Notifications []rawNotify `json:"notifications"`
+	TotalUnread   int         `json:"total_unread_count"`
+	Users         []struct {
+		ID   FlexInt `json:"id"`
+		Name string  `json:"name"`
+	} `json:"users"`
 }
 
-// NotifyFrom — im.notify.get → уведомления, свежие сверху.
-func NotifyFrom(raw []byte, now time.Time) []NotifyItem {
+// urlRe — первая ссылка [URL=адрес]подпись[/URL] в тексте/теме уведа.
+var urlRe = regexp.MustCompile(`(?i)\[URL=([^\]]+)\]`)
+
+// NotifyPageFrom — страница im.notify.get → уведомления и счётчик
+// непрочитанных (total_unread_count). Автор — из users[] ответа; ссылка —
+// из текста, у задач — из params.COMPONENT_PARAMS.SUBJECT.
+func NotifyPageFrom(raw []byte, now time.Time, skew time.Duration) ([]NotifyItem, int) {
 	var res rawNotifyResult
 	_ = json.Unmarshal(raw, &res)
+	names := make(map[int64]string, len(res.Users))
+	for _, u := range res.Users {
+		names[int64(u.ID)] = u.Name
+	}
 	now = now.Local()
 	out := make([]NotifyItem, 0, len(res.Notifications))
 	for _, n := range res.Notifications {
+		date := ShiftISO(n.Date, skew)
 		it := NotifyItem{
-			ID:     n.ID,
-			Module: n.Module,
-			Title:  StripBB(n.NotifyTitle),
-			Text:   StripBB(n.Text),
-			Time:   FmtTime(n.Date, now),
-			Unread: n.NotifyRead == "N",
+			ID:       string(n.ID),
+			Module:   n.Module,
+			Title:    StripBB(taskRefRe.ReplaceAllString(n.NotifyTitle, "#$1")),
+			Text:     StripBB(taskRefRe.ReplaceAllString(n.Text, "#$1")),
+			Time:     FmtTime(date, now),
+			Unread:   n.NotifyRead == "N",
+			AuthorID: int64(n.AuthorID),
+			Author:   names[int64(n.AuthorID)],
 		}
-		if t, err := time.Parse(time.RFC3339, n.Date); err == nil {
+		if t, err := time.Parse(time.RFC3339, date); err == nil {
 			it.Stamp = t.UnixMilli()
+			it.Date = t.Local().Format("02.01.2006 15:04")
+		}
+		if m := urlRe.FindStringSubmatch(n.Text); m != nil {
+			it.URL = m[1]
+		} else if n.Params != nil && n.Params.ComponentParams != nil {
+			if m := urlRe.FindStringSubmatch(n.Params.ComponentParams.Subject); m != nil {
+				it.URL = m[1]
+			}
 		}
 		if parts := strings.Split(n.Tag, "|"); len(parts) >= 3 &&
 			parts[0] == "TASKS" && parts[1] == "TASK" {
@@ -356,8 +427,24 @@ func NotifyFrom(raw []byte, now time.Time) []NotifyItem {
 		}
 		out = append(out, it)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Stamp > out[j].Stamp })
-	return out
+	sortNotify(out)
+	return out, res.TotalUnread
+}
+
+// NotifyFrom — im.notify.get → уведомления, свежие сверху.
+func NotifyFrom(raw []byte, now time.Time, skew time.Duration) []NotifyItem {
+	items, _ := NotifyPageFrom(raw, now, skew)
+	return items
+}
+
+// sortNotify — непрочитанные вверх, дальше свежие (Stamp, стабильно).
+func sortNotify(items []NotifyItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].Unread != items[j].Unread {
+			return items[i].Unread
+		}
+		return items[i].Stamp > items[j].Stamp
+	})
 }
 
 type rawTask struct {

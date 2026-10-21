@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Фикстуры повторяют реальные ответы portal.example.com (гейт №0).
@@ -86,7 +87,8 @@ func TestTasksPagination(t *testing.T) {
 
 func TestCountersFlexShapes(t *testing.T) {
 	c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"result":{"TYPE":{"ALL":9,"NOTIFY":7,"CHAT":{"10839":2},"DIALOG":0,"LINES":null}}}`)
+		fmt.Fprint(w, `{"result":{"TYPE":{"ALL":9,"NOTIFY":7,"MESSENGER":4,"CHAT":{"10839":2},"DIALOG":0,"LINES":null},
+			"CHANNEL_COMMENT":{"4659":{"13827":2,"14001":1},"13025":{"13023":1}}}}`)
 	})
 	ct, err := c.Counters(context.Background())
 	if err != nil {
@@ -94,6 +96,20 @@ func TestCountersFlexShapes(t *testing.T) {
 	}
 	if ct.Chat.Total != 2 || ct.Chat.ByID["10839"] != 2 || ct.Dialog.Total != 0 || ct.Notify != 7 || ct.Lines.Total != 0 {
 		t.Errorf("counters: %+v", ct)
+	}
+	if ct.Messenger.Total != 4 {
+		t.Errorf("messenger: %+v", ct.Messenger)
+	}
+	// комменты коллабов: сумма по под-чатам на родителя (живой кейс portal.example.com)
+	if ct.CollabUnread["4659"] != 3 || ct.CollabUnread["13025"] != 1 || len(ct.CollabUnread) != 2 {
+		t.Errorf("collab unread: %+v", ct.CollabUnread)
+	}
+	// пустой CHANNEL_COMMENT приходит как [] — не должен ломать декод
+	c2 := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"result":{"TYPE":{"ALL":0,"CHANNEL_COMMENT":[]}}}`)
+	})
+	if ct2, err := c2.Counters(context.Background()); err != nil || ct2.CollabUnread != nil {
+		t.Errorf("пустой CHANNEL_COMMENT: %+v err=%v", ct2, err)
 	}
 }
 
@@ -164,6 +180,29 @@ func TestEncodeParams(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("нет %q в %q", want, got)
 		}
+	}
+}
+
+// Skew измеряется по time.start ответа и держит минимум по наблюдениям:
+// каждая оценка завышена на сетевую задержку.
+func TestSkewMeasuredFromTimeStart(t *testing.T) {
+	c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"result":true,"time":{"start":%.3f}}`, float64(time.Now().Add(-time.Hour).UnixNano())/1e9)
+	})
+	if err := c.Call(context.Background(), "x", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if s := c.Skew(); s < 55*time.Minute || s > 65*time.Minute {
+		t.Fatalf("skew = %v, хочу ≈1ч", s)
+	}
+	// второе наблюдение с меньшей задержкой замещает, большее — нет
+	c.noteSkew(float64(time.Now().UnixNano()) / 1e9)
+	if s := c.Skew(); s > time.Minute {
+		t.Fatalf("минимум не обновился: %v", s)
+	}
+	c.noteSkew(float64(time.Now().Add(-3 * time.Hour).Unix()))
+	if s := c.Skew(); s > time.Minute {
+		t.Fatalf("минимум затёрся большим значением: %v", s)
 	}
 }
 

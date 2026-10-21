@@ -160,9 +160,7 @@ func (d *Daemon) Cycle(ctx context.Context) error {
 		log.Printf("batch[%s]: %v", k, e)
 	}
 
-	var counters struct {
-		TYPE b24.Counters `json:"TYPE"`
-	}
+	var counters b24.CountersResult
 	decodeInto(res["counters"], &counters)
 
 	// envelope декодируем всегда: offset обязан двигаться даже мимо битых
@@ -307,8 +305,16 @@ func (d *Daemon) Cycle(ctx context.Context) error {
 	}
 
 	// 5) снапшот для бара
+	// MESSENGER — весь непрочитанный мессенджер (лички + чаты + комменты
+	// коллабов в CHANNEL_COMMENT); CHAT+DIALOG их не видят (живой факт
+	// portal.example.com: ALL=2 при CHAT=0/DIALOG=0). max — страховка от порталов
+	// без MESSENGER в ответе.
+	chats := counters.TYPE.Messenger.Total
+	if old := counters.TYPE.Chat.Total + counters.TYPE.Dialog.Total; old > chats {
+		chats = old
+	}
 	snap := state.Snapshot{
-		Chats:     counters.TYPE.Chat.Total + counters.TYPE.Dialog.Total,
+		Chats:     chats,
 		Notify:    counters.TYPE.Notify,
 		Overdue:   len(overdue),
 		Today:     len(today),

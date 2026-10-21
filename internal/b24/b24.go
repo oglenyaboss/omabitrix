@@ -29,6 +29,9 @@ type Client struct {
 
 	srvMu     sync.Mutex
 	serverLoc *time.Location // из time.date_start ответов; наивные даты фильтров портал трактует в серверной зоне
+
+	skewMu sync.Mutex
+	skew   *time.Duration // минимальная оценка: местное время − серверное (time.start)
 }
 
 // ServerLoc — таймзона сервера (проверяется живьём: portal.example.com — сервер +03,
@@ -40,6 +43,32 @@ func (c *Client) ServerLoc() *time.Location {
 		return c.serverLoc
 	}
 	return time.UTC
+}
+
+// Skew — насколько часы сервера опережают местные (отрицательное — сервер
+// отстаёт). Даты портала прошиты теми же часами, что и time.start ответа,
+// поэтому сдвиг на Skew() приводит их к часам ПК. Храним минимум по
+// наблюдениям: каждая оценка завышена на сетевую задержку, для минутной
+// точности отображения этого достаточно.
+func (c *Client) Skew() time.Duration {
+	c.skewMu.Lock()
+	defer c.skewMu.Unlock()
+	if c.skew == nil {
+		return 0
+	}
+	return *c.skew
+}
+
+func (c *Client) noteSkew(startEpoch float64) {
+	if startEpoch == 0 {
+		return
+	}
+	d := time.Since(time.Unix(int64(startEpoch), 0))
+	c.skewMu.Lock()
+	defer c.skewMu.Unlock()
+	if c.skew == nil || d < *c.skew {
+		c.skew = &d
+	}
 }
 
 func New(webhookURL string) *Client {
@@ -100,12 +129,14 @@ func (c *Client) call(ctx context.Context, method string, params any, out any) e
 		Error  string          `json:"error"`
 		Descr  string          `json:"error_description"`
 		Time   struct {
-			DateStart string `json:"date_start"`
+			DateStart string  `json:"date_start"`
+			Start     float64 `json:"start"`
 		} `json:"time"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return fmt.Errorf("b24 %s: %w: %.200s", method, err, raw)
 	}
+	c.noteSkew(env.Time.Start)
 	if env.Error != "" {
 		return &Error{Method: method, Code: env.Error, Description: env.Descr}
 	}
@@ -400,17 +431,52 @@ func (f *FlexCount) UnmarshalJSON(b []byte) error {
 }
 
 type Counters struct {
-	All    int       `json:"ALL"`
-	Notify int       `json:"NOTIFY"`
-	Chat   FlexCount `json:"CHAT"`
-	Dialog FlexCount `json:"DIALOG"`
-	Lines  FlexCount `json:"LINES"`
+	All       int       `json:"ALL"`
+	Notify    int       `json:"NOTIFY"`
+	Messenger FlexCount `json:"MESSENGER"` // весь мессенджер: чаты + лички + комменты коллабов
+	Chat      FlexCount `json:"CHAT"`
+	Dialog    FlexCount `json:"DIALOG"`
+	Lines     FlexCount `json:"LINES"`
+	// CollabUnread — непрочитанное в под-чатах коллабов (CHANNEL_COMMENT):
+	// id родительского чата → сумма по под-чатам. Портал считает их
+	// отдельно от CHAT/DIALOG, поэтому бейдж без них врёт.
+	CollabUnread map[string]int `json:"-"`
+}
+
+// CountersResult — весь ответ im.counters.get: CHANNEL_COMMENT лежит рядом
+// с TYPE, не внутри (живой факт portal.example.com) — поэтому свой UnmarshalJSON.
+func (r *CountersResult) UnmarshalJSON(b []byte) error {
+	var wire struct {
+		TYPE           Counters        `json:"TYPE"`
+		ChannelComment json.RawMessage `json:"CHANNEL_COMMENT"`
+	}
+	if err := json.Unmarshal(b, &wire); err != nil {
+		return err
+	}
+	r.TYPE = wire.TYPE
+	if len(wire.ChannelComment) > 0 && wire.ChannelComment[0] == '{' {
+		var subs map[string]map[string]int
+		if err := json.Unmarshal(wire.ChannelComment, &subs); err != nil {
+			return err
+		}
+		r.TYPE.CollabUnread = make(map[string]int, len(subs))
+		for parent, m := range subs {
+			n := 0
+			for _, v := range m {
+				n += v
+			}
+			r.TYPE.CollabUnread[parent] = n
+		}
+	}
+	return nil
+}
+
+type CountersResult struct {
+	TYPE Counters
 }
 
 func (c *Client) Counters(ctx context.Context) (Counters, error) {
-	var out struct {
-		TYPE Counters `json:"TYPE"`
-	}
+	var out CountersResult
 	if err := c.call(ctx, "im.counters.get", nil, &out); err != nil {
 		return Counters{}, err
 	}
