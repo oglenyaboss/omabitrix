@@ -30,7 +30,7 @@ Panel {
   readonly property int listCap: Style.space(440)
   readonly property int historyCap: Style.space(340)
   readonly property int descCap: Style.space(220)
-  readonly property string portal: setting("portal", "https://portal.example.com")
+  readonly property string portal: setting("portal", "")
 
   // ---- состояние навигации
   property int tab: 0 // 0 чаты, 1 уведомления, 2 задачи

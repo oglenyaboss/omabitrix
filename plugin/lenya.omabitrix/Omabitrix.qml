@@ -12,7 +12,8 @@ BarWidget {
 
   moduleName: "lenya.omabitrix"
 
-  readonly property string portal: setting("portal", "https://portal.example.com")
+  // портал для ПКМ: из настроек виджета, иначе из снапшота демона
+  readonly property string portal: setting("portal", "") || (snap && snap.portal || "")
   readonly property string snapshotPath: Quickshell.env("HOME") + "/.local/state/omabitrix/snapshot.json"
 
   property var snap: null
@@ -104,7 +105,7 @@ BarWidget {
         + " · сегодня: " + (root.snap ? root.snap.today || 0 : 0)
 
     onPressed: function(b) {
-      if (b === Qt.RightButton) Util.execArgv(["omarchy-launch-webapp", root.portal])
+      if (b === Qt.RightButton && root.portal) Util.execArgv(["omarchy-launch-webapp", root.portal])
       else root.launchTUI([])
     }
   }

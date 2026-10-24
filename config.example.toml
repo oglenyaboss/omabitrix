@@ -1,13 +1,13 @@
 # omabitrix — конфиг демона. Копировать в ~/.config/omabitrix/config.toml
 # Портал (без слэша в конце)
-portal = "https://portal.example.com"
+portal = "https://mycompany.bitrix24.ru"
 
-# Входящий вебхук: Приложения → Вебхуки (права: im + task)
-webhook_user = 75
+# Входящий вебхук: Приложения → Вебхуки (права: im, task, disk — вложения через Диск)
+webhook_user = 1
 webhook_secret = "XXXXXXXXXXXXXXXX"
 
 # Твой ID юзера (пусто = webhook_user)
-user_id = 75
+user_id = 1
 
 # Таймзона, в которой считаем границы «сегодня» (по умолчанию — из дат задач; тут можно перезадать)
 tz = "Asia/Yekaterinburg"

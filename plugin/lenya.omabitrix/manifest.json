@@ -30,7 +30,7 @@
         "type": "string",
         "label": "Портал",
         "description": "URL портала Bitrix24, открывается по клику",
-        "defaultValue": "https://portal.example.com"
+        "defaultValue": "https://mycompany.bitrix24.ru"
       }
     ]
   }
