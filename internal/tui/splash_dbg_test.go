@@ -1,16 +1,10 @@
 package tui
 
-import (
-	"fmt"
-	"testing"
-)
+import "testing"
 
 func TestSplashRenders(t *testing.T) {
 	s := Splash("x")
 	lines := splitLines(s)
-	for _, l := range lines {
-		fmt.Printf("%q\n", l)
-	}
 	if len(lines) < 8 {
 		t.Fatalf("мало строк: %d", len(lines))
 	}
