@@ -20,10 +20,11 @@ func main() {
 	chat := flag.String("chat", "", "dialog_id для открытия (например chat10839)")
 	taskID := flag.Int64("task", 0, "id задачи для открытия карточки")
 	demoMode := flag.Bool("demo", false, "демо: встроенный фейковый портал, без конфига и сети")
+	trailer := flag.Bool("trailer", false, "трейлер для README: ролик в терминале на демо-портале")
 	flag.Parse()
 
 	var api *tui.API
-	if *demoMode {
+	if *demoMode || *trailer {
 		dir, err := os.MkdirTemp("", "omabitrix-demo-")
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "omabitrix:", err)
@@ -31,7 +32,11 @@ func main() {
 		}
 		defer os.RemoveAll(dir)
 		os.Setenv("XDG_CACHE_HOME", dir)
-		srv := demo.Start(demo.Options{PingAfter: 12 * time.Second})
+		ping := 12 * time.Second
+		if *trailer {
+			ping = tui.TrailerPing
+		}
+		srv := demo.Start(demo.Options{PingAfter: ping})
 		defer srv.Close()
 		client := b24.New(srv.URL + demo.WebhookPath)
 		client.RateLimit = 150 * time.Millisecond
@@ -63,7 +68,11 @@ func main() {
 		m.PlayIntro()
 	}
 
-	p := tea.NewProgram(m)
+	var root tea.Model = m
+	if *trailer {
+		root = tui.NewTrailer(api, ctx)
+	}
+	p := tea.NewProgram(root)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "omabitrix:", err)
 		os.Exit(1)

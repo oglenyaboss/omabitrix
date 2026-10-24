@@ -395,8 +395,10 @@ func introPalette() introPal {
 }
 
 type cell struct {
-	ch rune
-	c  rgb
+	ch    rune
+	c     rgb
+	bg    rgb
+	hasBg bool
 }
 
 type grid struct {
@@ -416,7 +418,17 @@ func (g *grid) set(x, y int, ch rune, c rgb) {
 	if x < 0 || y < 0 || x >= g.w || y >= g.h {
 		return
 	}
-	g.cells[y*g.w+x] = cell{ch, c}
+	cl := &g.cells[y*g.w+x]
+	cl.ch, cl.c = ch, c
+}
+
+func (g *grid) fillBg(x0, y0, x1, y1 int, c rgb) {
+	for y := max(y0, 0); y <= min(y1, g.h-1); y++ {
+		for x := max(x0, 0); x <= min(x1, g.w-1); x++ {
+			cl := &g.cells[y*g.w+x]
+			cl.bg, cl.hasBg = c, true
+		}
+	}
 }
 
 func (g *grid) text(x, y int, s string, c rgb) {
@@ -428,24 +440,36 @@ func (g *grid) text(x, y int, s string, c rgb) {
 
 func (g *grid) lines() []string {
 	out := make([]string, g.h)
-	var b strings.Builder
 	for y := range out {
-		b.Reset()
-		var cur rgb
-		styled := false
-		for _, cl := range g.cells[y*g.w : (y+1)*g.w] {
-			if cl.ch != ' ' && (!styled || cl.c != cur) {
-				fmt.Fprintf(&b, "\x1b[38;2;%d;%d;%dm", cl.c.r, cl.c.g, cl.c.b)
-				cur, styled = cl.c, true
-			}
-			b.WriteRune(cl.ch)
-		}
-		if styled {
-			b.WriteString("\x1b[0m")
-		}
-		out[y] = b.String()
+		out[y] = g.span(y, 0, g.w)
 	}
 	return out
+}
+
+// span — кусок строки [x0, x1) с собственным сбросом стиля.
+func (g *grid) span(y, x0, x1 int) string {
+	var b strings.Builder
+	var fg, bg rgb
+	fgOn, bgOn := false, false
+	for _, cl := range g.cells[y*g.w+x0 : y*g.w+x1] {
+		if cl.hasBg != bgOn || (cl.hasBg && cl.bg != bg) {
+			if cl.hasBg {
+				fmt.Fprintf(&b, "\x1b[48;2;%d;%d;%dm", cl.bg.r, cl.bg.g, cl.bg.b)
+			} else {
+				b.WriteString("\x1b[49m")
+			}
+			bg, bgOn = cl.bg, cl.hasBg
+		}
+		if cl.ch != ' ' && (!fgOn || cl.c != fg) {
+			fmt.Fprintf(&b, "\x1b[38;2;%d;%d;%dm", cl.c.r, cl.c.g, cl.c.b)
+			fg, fgOn = cl.c, true
+		}
+		b.WriteRune(cl.ch)
+	}
+	if fgOn || bgOn {
+		b.WriteString("\x1b[0m")
+	}
+	return b.String()
 }
 
 func clamp01(t float64) float64 { return max(0, min(1, t)) }

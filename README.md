@@ -73,7 +73,7 @@ o.window("^omabitrix$", { float = true, center = true, size = { 1280, 800 } })
 | Кусок | Что делает |
 |---|---|
 | `cmd/omabitrixd` | демон: polling-цикл (`batch` ≤50 команд), тосты с идемпотентностью, снапшот для бара; `-setup` — онбординг, `-doctor` — проверка портала |
-| `cmd/omabitrix` | TUI (bubbletea): вкладки пульт/задачи/чаты/уведы, вложения, ответы, канбан; `-demo` — встроенный фейковый портал |
+| `cmd/omabitrix` | TUI (bubbletea): вкладки пульт/задачи/чаты/уведы, вложения, ответы, канбан; `-demo` — встроенный фейковый портал, `-trailer` — ролик-трейлер на нём |
 | `plugin/lenya.omabitrix` | QML-виджет бара Omarchy: иконка + бейдж непрочитанных |
 | `internal/*` | `b24` (REST-клиент с rate-limit), `rules` (классификация/DND/идемпотентность), `state` (атомарный state+snapshot), `notify`, `daemon`, `setup`, `tui`, `demo` (фейковый портал для `-demo`) |
 
@@ -87,7 +87,7 @@ cat ~/.local/state/omabitrix/snapshot.json
 
 Тост: чужое личное сообщение, упоминание, комментарий в твоей задаче, дедлайн ≤1 ч, просрочка (раз в сутки). Клик по тосту — карточка или чат. Ночь (DND) — тишина, всё в счётчике. Горячие клавиши TUI — `?` внутри.
 
-Гифки и скриншоты в README пересобираются из демо: `make build && vhs scripts/intro.tape && vhs scripts/tour.tape` (нужны [vhs](https://github.com/charmbracelet/vhs) и ttyd).
+Гифки и скриншоты в README пересобираются из демо: `make build && vhs scripts/intro.tape && vhs scripts/tour.tape` (нужны [vhs](https://github.com/charmbracelet/vhs) и ttyd). Трейлер `docs/assets/trailer.mp4` (1080p, весь кадр — живой терминал) — `scripts/trailer.sh`, ещё нужен ffmpeg.
 
 Спека и ресёрч: [docs/SPEC.md](docs/SPEC.md) · [docs/research/](docs/research/)
 
