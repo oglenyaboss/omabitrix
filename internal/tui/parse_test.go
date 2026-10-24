@@ -8,6 +8,12 @@ import (
 
 var now = time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
 
+// Ожидания по времени записаны в зоне ПК (UTC+5), а CI крутится в UTC.
+func TestMain(m *testing.M) {
+	time.Local = time.FixedZone("UTC+5", 5*3600)
+	m.Run()
+}
+
 func TestStripBB(t *testing.T) {
 	cases := map[string]string{
 		"[b]жирный[/b]":            "жирный",
