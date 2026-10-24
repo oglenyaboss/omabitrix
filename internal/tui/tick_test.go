@@ -13,7 +13,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"omabitrix/internal/b24"
+	"github.com/oglenyaboss/omabitrix/internal/b24"
 )
 
 // Тик обязан перечитывать все три списка: активность мимо TUI (ответ

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"omabitrix/internal/b24"
+	"github.com/oglenyaboss/omabitrix/internal/b24"
 )
 
 type Kind string

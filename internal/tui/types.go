@@ -16,12 +16,25 @@ type Chat struct {
 	Online       bool
 }
 
+// Attachment — файл сообщения (files[] ответа im.dialog.messages.get).
+type Attachment struct {
+	ID   int64  // disk-файл; fileId для im.v2.File.download (живая проверка)
+	Type string // "image" | "file": поле image у портала бывает false даже у png
+	Name string
+	Ext  string
+	Size int64
+}
+
+// IsImage — картинка для инлайн-превью в истории.
+func (a Attachment) IsImage() bool { return a.Type == "image" }
+
 // Message — строка истории диалога (регулярная или системная).
 type Message struct {
 	ID         int64
 	AuthorID   int64 // 0 = системное; ключ цвета автора и группировки
 	Name       string
 	Text       string
+	Files      []Attachment
 	Time       string
 	DayKey     string
 	DayLabel   string

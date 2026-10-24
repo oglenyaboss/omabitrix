@@ -104,7 +104,8 @@ type Snapshot struct {
 	Notify       int          `json:"notify"`
 	Overdue      int          `json:"overdue"`
 	Today        int          `json:"today"`
-	Error        string       `json:"error,omitempty"` // непусто → плагин показывает ⚠️
+	Portal       string       `json:"portal,omitempty"` // ПКМ виджета: единый источник — конфиг демона
+	Error        string       `json:"error,omitempty"`  // непусто → плагин показывает ⚠️
 	Unread       []UnreadChat `json:"unread,omitempty"`
 	OverdueTasks []TaskRef    `json:"overdue_tasks,omitempty"`
 	TodayTasks   []TaskRef    `json:"today_tasks,omitempty"`

@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"omabitrix/internal/b24"
-	"omabitrix/internal/config"
-	"omabitrix/internal/rules"
-	"omabitrix/internal/state"
+	"github.com/oglenyaboss/omabitrix/internal/b24"
+	"github.com/oglenyaboss/omabitrix/internal/config"
+	"github.com/oglenyaboss/omabitrix/internal/rules"
+	"github.com/oglenyaboss/omabitrix/internal/state"
 )
 
 type fakeSender struct {

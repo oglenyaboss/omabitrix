@@ -5,7 +5,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"omabitrix/internal/rules"
+	"github.com/oglenyaboss/omabitrix/internal/rules"
 )
 
 // startOpener — точка подмены в тестах: реальный xdg-open оттуда не зовётся.

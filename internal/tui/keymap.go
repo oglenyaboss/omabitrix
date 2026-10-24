@@ -50,6 +50,9 @@ type keyMap struct {
 	ReadAll    key.Binding // A
 	MarkRead   key.Binding // u — прочитано/непрочитано на уведе
 	Browser    key.Binding // o
+	Attach     key.Binding // a в поле ответа — приложить файл
+	PasteImg   key.Binding // ctrl+v — картинка из буфера
+	FileOpen   key.Binding // enter на выделенном — просмотр вложения
 }
 
 var km = keyMap{
@@ -233,20 +236,32 @@ var km = keyMap{
 		key.WithKeys("u"),
 		key.WithHelp("u", "прочитано ⇄ нет"),
 	),
+	Attach: key.NewBinding(
+		key.WithKeys("a"),
+		key.WithHelp("a", "файл"),
+	),
+	PasteImg: key.NewBinding(
+		key.WithKeys("ctrl+v"),
+		key.WithHelp("^v", "картинка"),
+	),
+	FileOpen: key.NewBinding(
+		key.WithKeys("enter"),
+		key.WithHelp("enter", "вложение"),
+	),
 }
 
 // shortHelp — контекстный набор для футера, «?» — в конце каждого набора.
 func (m Model) shortHelp() []key.Binding {
 	switch {
 	case m.focus == focusReply:
-		return []key.Binding{km.Send, km.Cancel, km.Help}
+		return []key.Binding{km.Send, km.Attach, km.PasteImg, km.Cancel, km.Help}
 	case m.searchOn:
 		return []key.Binding{km.Up, km.Down, km.Back, km.Help}
 	case m.tab == tabTasks && m.taskOpen:
 		// чат задачи открыт справа — подсказки экрана задачи важнее
 		return []key.Binding{km.StageMove, km.Status, km.Deadline, km.ReplyField, km.TaskChat, km.Browser, km.Quit, km.Help}
 	case m.sel >= 0:
-		return []key.Binding{km.ReplyQuote, km.Copy, km.Edit, km.Delete, km.Like, km.Mention, km.Cancel, km.Help}
+		return []key.Binding{km.ReplyQuote, km.FileOpen, km.Copy, km.Edit, km.Delete, km.Like, km.Mention, km.Cancel, km.Help}
 	case m.active != nil:
 		return []key.Binding{km.Reply, km.Select, km.Older, km.Search, km.PageUp, km.PageDown, km.Back, km.Help}
 	case m.tab == tabTasks:
@@ -268,7 +283,7 @@ func (m Model) fullHelp() [][]key.Binding {
 		// вкладки
 		{km.Tab1, km.Tab2, km.Tab3, km.Tab4, km.NextTab, km.PrevTab},
 		// чаты (r — ответить, на выделенном — с цитатой)
-		{km.Select, km.ReplyQuote, km.Copy, km.Edit, km.Delete, km.Like, km.Mention, km.Send, km.Cancel, km.Older, km.Search},
+		{km.Select, km.ReplyQuote, km.FileOpen, km.Copy, km.Edit, km.Delete, km.Like, km.Mention, km.Send, km.Attach, km.PasteImg, km.Cancel, km.Older, km.Search},
 		// задачи
 		{km.NextDue, km.StageMove, km.Status, km.Deadline, km.TaskChat, km.Reply, km.ColLeft, km.ColRight, km.Role, km.Project},
 		// уведы

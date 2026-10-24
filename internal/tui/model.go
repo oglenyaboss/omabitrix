@@ -2,6 +2,9 @@ package tui
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,6 +37,7 @@ const (
 	focusReply
 	focusFilter
 	focusSearch
+	focusAttach
 )
 
 type overlay int
@@ -44,6 +48,7 @@ const (
 	ovStatus
 	ovDeadline
 	ovConfirm // «удалить сообщение? y/n»
+	ovImage   // полноэкранный просмотр вложения
 )
 
 // Model — корневая модель: одна Update, экраны — рендер-функции.
@@ -83,12 +88,19 @@ type Model struct {
 	searchOn  bool            // панель диалога показывает результаты, не историю
 	searchOff int             // строковый офсет окна результатов
 
-	sel      int              // выделенное сообщение (-1 — режим выключен)
-	replyTo  Message          // ответ-цитата для следующей отправки
-	editID   int64            // правка своего сообщения
-	delID    int64            // сообщение под подтверждением удаления
-	mentions map[string]int64 // имена, вставленные по «@»: имя → id автора
-	msgLine  map[int64]int    // стартовая строка сообщения в рендере истории
+	sel        int              // выделенное сообщение (-1 — режим выключен)
+	replyTo    Message          // ответ-цитата для следующей отправки
+	editID     int64            // правка своего сообщения
+	delID      int64            // сообщение под подтверждением удаления
+	mentions   map[string]int64 // имена, вставленные по «@»: имя → id автора
+	msgLine    map[int64]int    // стартовые строки сообщения в рендере истории
+	attachLine map[int64][2]int // строки блока вложений: клик мышью открывает
+
+	attach   string          // путь прикреплённого к ответу файла
+	attachIn textinput.Model // ввод пути к файлу
+	fileJobs map[int64]bool  // загрузки вложений в полёте
+	imgMsg   Message         // сообщение открытого вложения (ovImage)
+	imgOff   int             // строка прокрутки просмотра
 
 	taskIdx       int    // выбранная задача в плоском списке
 	taskRole      string // роль доски: do | help | watch (пусто — do)
@@ -140,6 +152,9 @@ func NewModel(api *API, ctx context.Context) Model {
 	si := textinput.New()
 	si.Placeholder = "поиск по истории…"
 	si.CharLimit = 100
+	ai := textinput.New()
+	ai.Placeholder = "путь к файлу…"
+	ai.CharLimit = 4096
 	h := help.New()
 	h.ShortSeparator = "  "
 	h.FullSeparator = "  "
@@ -154,8 +169,10 @@ func NewModel(api *API, ctx context.Context) Model {
 	}
 	return Model{
 		api: api, ctx: ctx,
-		spinner: sp, reply: ta, filterIn: ti, searchIn: si, help: h,
+		spinner: sp, reply: ta, filterIn: ti, searchIn: si, attachIn: ai, help: h,
 		sel: -1, drafts: map[string]string{}, mentions: map[string]int64{},
+		fileJobs:   map[int64]bool{},
+		attachLine: map[int64][2]int{},
 	}
 }
 
@@ -364,7 +381,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		return m, read
+		return m, tea.Batch(read, m.fetchImagesCmd())
 
 	case searchMsg:
 		if m.active == nil || m.active.DialogID != msg.dialogID {
@@ -426,6 +443,55 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.api.chatsAt = time.Time{} // превью списка обновится при следующем Chats()
 		return m, m.loadCmd("chats")
+
+	case fileSentMsg:
+		m.sending = false
+		same := m.active != nil && m.active.DialogID == msg.dialogID
+		if msg.err != nil {
+			m.loadErr = "файл не отправлен: " + msg.err.Error()
+			if same {
+				// подпись возвращаем в поле; файл — заново через «a»
+				if v := m.reply.Value(); v == "" {
+					m.reply.SetValue(msg.caption)
+				} else if msg.caption != "" {
+					m.reply.SetValue(msg.caption + " " + v)
+				}
+			}
+			return m, nil
+		}
+		m.attach = ""
+		if same {
+			now := m.api.now()
+			key, label := DayInfo(now.Format(time.RFC3339), now)
+			m.history = append(m.history, Message{
+				ID: msg.id, Name: "я",
+				Files: []Attachment{{ID: msg.fileID, Type: fileTypeName(msg.image),
+					Name: msg.name, Ext: strings.TrimPrefix(filepath.Ext(msg.name), "."), Size: msg.size}},
+				Time: now.Local().Format("15:04"), DayKey: key, DayLabel: label, Mine: true,
+			})
+			m.renderHistory()
+			m.vp.GotoBottom()
+		}
+		m.api.chatsAt = time.Time{}
+		return m, m.loadCmd("chats")
+
+	case fileMsg:
+		// вложение скачалось: убрать job, перерисовать историю (или просмотр)
+		delete(m.fileJobs, msg.att.ID)
+		if msg.err != nil {
+			m.flash = "файл не скачался: " + msg.err.Error()
+			m.flashAt = m.api.now()
+			return m, nil
+		}
+		if m.overlay == ovImage && m.imgMsg.ID != 0 {
+			m.imgOff = 0
+		}
+		atBottom := m.vp.AtBottom()
+		m.renderHistory()
+		if atBottom {
+			m.vp.GotoBottom()
+		}
+		return m, nil
 
 	case statusMsg:
 		if msg.err != nil {
@@ -817,11 +883,140 @@ func (m Model) refreshActiveCmd() tea.Cmd {
 	return m.historyCmd(m.active.DialogID, 0)
 }
 
+// fetchImagesCmd — докачать инлайн-превью картинок открытого диалога:
+// по одному im.v2.File.download на файл (лимит 2 req/s держит клиент),
+// дубликаты гасит fileJobs, ответы рисуются fileMsg-ом.
+func (m *Model) fetchImagesCmd() tea.Cmd {
+	if m.api == nil || m.api.C == nil {
+		return nil
+	}
+	var cmds []tea.Cmd
+	for _, msg := range m.history {
+		for _, f := range msg.Files {
+			if !f.IsImage() || f.ID <= 0 || m.fileJobs[f.ID] {
+				continue
+			}
+			if _, ok := cachedPath(f); ok {
+				continue
+			}
+			m.fileJobs[f.ID] = true
+			cmds = append(cmds, fetchFileCmd(m.api, f))
+		}
+	}
+	switch len(cmds) {
+	case 0:
+		return nil
+	case 1:
+		return cmds[0]
+	}
+	return tea.Batch(cmds...)
+}
+
+// openAttach — вложение выделенного сообщения: картинка — полноэкранный
+// оверлей (ovImage), остальное — скачать и открыть системным вьювером.
+func (m Model) openAttach() (tea.Model, tea.Cmd) {
+	if m.sel < 0 || m.sel >= len(m.history) {
+		return m, nil
+	}
+	msg := m.history[m.sel]
+	if len(msg.Files) == 0 {
+		m.flash = "у сообщения нет вложений"
+		m.flashAt = m.api.now()
+		return m, nil
+	}
+	for _, f := range msg.Files {
+		if !f.IsImage() {
+			continue
+		}
+		m.imgMsg = msg
+		m.imgOff = 0
+		m.overlay = ovImage
+		if _, ok := cachedPath(f); !ok && !m.fileJobs[f.ID] && m.api.C != nil {
+			m.fileJobs[f.ID] = true
+			return m, fetchFileCmd(m.api, f)
+		}
+		return m, nil
+	}
+	f := msg.Files[0]
+	if m.api.C == nil {
+		m.flash = "файл: нет клиента портала"
+		m.flashAt = m.api.now()
+		return m, nil
+	}
+	if _, ok := cachedPath(f); ok {
+		p, _ := cachedPath(f)
+		m.flash = "открываю " + f.Name
+		m.flashAt = m.api.now()
+		if err := startOpener(p); err != nil {
+			m.flash = "не открылось: " + err.Error()
+		}
+		return m, nil
+	}
+	m.fileJobs[f.ID] = true
+	m.flash = "скачиваю " + f.Name + "…"
+	m.flashAt = m.api.now()
+	return m, openFileCmd(m.api, f)
+}
+
 type sentMsg struct {
 	dialogID string
 	id       int64
 	text     string
 	err      error
+}
+
+// fileSentMsg — итог im.v2.File.upload: файл улетел вместе с подписью.
+type fileSentMsg struct {
+	dialogID string
+	name     string
+	fileID   int64
+	size     int64
+	id       int64 // сообщение
+	caption  string
+	image    bool // оптимистичная история: рисовать инлайн-превью
+	err      error
+}
+
+// sendFileCmd — отправка файла с подписью; байты читаются здесь же,
+// путь пришёл проверенным (focusAttach). Байты сразу ложатся в кэш —
+// своё превью рисуется без повторной загрузки.
+func (m Model) sendFileCmd(path, caption string) tea.Cmd {
+	api, ctx := m.api, m.ctx
+	dialogID := m.active.DialogID
+	name := filepath.Base(path)
+	return func() tea.Msg {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return fileSentMsg{dialogID: dialogID, name: name, caption: caption, err: err}
+		}
+		id, fid, err := api.UploadFile(ctx, dialogID, name, content, caption)
+		if err == nil && fid > 0 {
+			writeCached(fid, strings.TrimPrefix(filepath.Ext(name), "."), content)
+		}
+		return fileSentMsg{dialogID: dialogID, name: name, fileID: fid,
+			size: int64(len(content)), id: id, caption: caption,
+			image: isImageName(name), err: err}
+	}
+}
+
+// sendClipboardCmd — картинка из буфера Wayland → im.v2.File.upload.
+func (m Model) sendClipboardCmd() tea.Cmd {
+	api, ctx := m.api, m.ctx
+	dialogID := m.active.DialogID
+	name := clipboardImageName(m.api.now())
+	return func() tea.Msg {
+		content, err := wlPaste()
+		if err != nil {
+			return fileSentMsg{dialogID: dialogID, name: name,
+				err: errors.New("в буфере нет картинки (нужен wl-paste)")}
+		}
+		id, fid, err := api.UploadFile(ctx, dialogID, name, content, "")
+		if err == nil && fid > 0 {
+			writeCached(fid, "png", content)
+		}
+		return fileSentMsg{dialogID: dialogID, name: name, fileID: fid,
+			size: int64(len(content)), id: id, image: true, err: err}
+	}
 }
 
 // sendCmd — текст приходит параметром: поле уже очищено при отправке.
@@ -1033,6 +1228,19 @@ func (m *Model) notifyMoreCmd() tea.Cmd {
 func (m Model) mouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 	if m.overlay != ovNone {
 		return m, nil
+	}
+	if msg.Button == tea.MouseLeft {
+		// клик по вложению в панели диалога — как по миниатюре в телеге:
+		// работает из любого фокуса и вкладки с открытым чатом
+		onDialog := m.tab == tabChats && msg.X > m.listW+4 && m.active != nil ||
+			m.tab == tabTasks && m.taskOpen && msg.X > m.cardW+4 && m.active != nil
+		if onDialog {
+			if idx, ok := m.hitAttach(msg.Y); ok {
+				m.sel = idx
+				m.renderHistory()
+				return m.openAttach()
+			}
+		}
 	}
 	// клик по списку чатов работает и из поля ответа: фильтр/поиск — нет
 	if m.focus != focusList {
@@ -1411,6 +1619,7 @@ func (m *Model) openDialog(idx int) {
 	if idx < 0 || idx >= len(vc) {
 		return
 	}
+	m.attach = "" // файл не должен уйти в другой диалог
 	m.active = &vc[idx]
 	m.cursor = idx
 	m.reply.SetValue(m.drafts[m.active.DialogID])
@@ -1432,6 +1641,7 @@ func (m *Model) closeDialog() {
 	m.resetSearch()
 	m.sel = -1
 	m.mentions = map[string]int64{}
+	m.attach = "" // файл не должен уйти в другой диалог
 	if m.taskOpen {
 		m.tab = tabTasks
 	}
@@ -1525,7 +1735,7 @@ func (m *Model) renderHistory() {
 	line := 0
 	m.msgLine = map[int64]int{} // стартовые строки сообщений — скролл к выделенному
 
-	// writeMsg — блок одного сообщения: цитата, затем текст; у выделенного
+	// writeMsg — блок одного сообщения: цитата, текст, вложения; у выделенного
 	// каждая строка блока получает маркер в колонке отступа.
 	writeMsg := func(hm hmsg, head, text string) {
 		m.msgLine[hm.msg.ID] = line
@@ -1533,7 +1743,14 @@ func (m *Model) renderHistory() {
 		if q := m.quoteLine(hm.msg, W-6); q != "" {
 			lines = append(lines, q)
 		}
-		lines = append(lines, strings.Split(indentWrap(head+text, W, 2), "\n")...)
+		if strings.TrimSpace(head+text) != "" || len(hm.msg.Files) == 0 {
+			lines = append(lines, strings.Split(indentWrap(head+text, W, 2), "\n")...)
+		}
+		if att := attachLines(hm.msg, W); len(att) > 0 {
+			start := line + len(lines)
+			lines = append(lines, att...)
+			m.attachLine[hm.msg.ID] = [2]int{start, start + len(att)}
+		}
 		if hm.idx == m.sel {
 			for i := range lines {
 				lines[i] = stCursor.Render("▌") + " " + lines[i]
@@ -1625,6 +1842,37 @@ func (m *Model) keepSel(id int64) {
 	}
 }
 
+// imgFirst — первый файл сообщения открытого просмотра (ovImage).
+func (m Model) imgFirst() (Attachment, bool) {
+	for _, f := range m.imgMsg.Files {
+		return f, true
+	}
+	return Attachment{}, false
+}
+
+// openImageExternal — enter в просмотре: оригинал в системном вьювере.
+func (m Model) openImageExternal() (tea.Model, tea.Cmd) {
+	f, ok := m.imgFirst()
+	if !ok {
+		return m, nil
+	}
+	if p, cached := cachedPath(f); cached {
+		m.flash = "открываю " + f.Name
+		m.flashAt = m.api.now()
+		if err := startOpener(p); err != nil {
+			m.flash = "не открылось: " + err.Error()
+		}
+		return m, nil
+	}
+	if m.api.C == nil || m.fileJobs[f.ID] {
+		return m, nil
+	}
+	m.fileJobs[f.ID] = true
+	m.flash = "скачиваю " + f.Name + "…"
+	m.flashAt = m.api.now()
+	return m, openFileCmd(m.api, f)
+}
+
 // enterSel — режим выделения: встаём на последнее не-системное сообщение.
 func (m *Model) enterSel() {
 	for i := len(m.history) - 1; i >= 0; i-- {
@@ -1652,6 +1900,21 @@ func (m *Model) selStep(dir int) {
 			return
 		}
 	}
+}
+
+// hitAttach — экранная строка клика → сообщение, чей блок вложений
+// под ней (строки рендера истории минус шапка и оффсет скролла).
+func (m Model) hitAttach(y int) (int, bool) {
+	if m.active == nil || m.searchOn {
+		return -1, false
+	}
+	line := y - 2 + m.vp.YOffset() - m.topExtra()
+	for i := range m.history {
+		if span, ok := m.attachLine[m.history[i].ID]; ok && line >= span[0] && line < span[1] {
+			return i, true
+		}
+	}
+	return -1, false
 }
 
 // topExtra — строка «начало переписки» над контентом (msgLine её не считает).

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"omabitrix/internal/b24"
+	"github.com/oglenyaboss/omabitrix/internal/b24"
 )
 
 func event(entityType, chatType, dialogID string, author int, text string, link string) b24.Event {

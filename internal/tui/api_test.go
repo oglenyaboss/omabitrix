@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"omabitrix/internal/b24"
+	"github.com/oglenyaboss/omabitrix/internal/b24"
 )
 
 func TestBucketsRFC3339(t *testing.T) {

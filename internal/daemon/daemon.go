@@ -9,11 +9,11 @@ import (
 	"strconv"
 	"time"
 
-	"omabitrix/internal/b24"
-	"omabitrix/internal/config"
-	"omabitrix/internal/notify"
-	"omabitrix/internal/rules"
-	"omabitrix/internal/state"
+	"github.com/oglenyaboss/omabitrix/internal/b24"
+	"github.com/oglenyaboss/omabitrix/internal/config"
+	"github.com/oglenyaboss/omabitrix/internal/notify"
+	"github.com/oglenyaboss/omabitrix/internal/rules"
+	"github.com/oglenyaboss/omabitrix/internal/state"
 )
 
 const taskFields = "ID,TITLE,STATUS,subStatus,DEADLINE,CHANGED_DATE,CREATED_DATE,NEW_COMMENTS_COUNT"
@@ -318,6 +318,7 @@ func (d *Daemon) Cycle(ctx context.Context) error {
 		Notify:    counters.TYPE.Notify,
 		Overdue:   len(overdue),
 		Today:     len(today),
+		Portal:    d.Cfg.Portal,
 		UpdatedAt: now.Format(time.RFC3339),
 	}
 	if d.Cfg.CountLines {
@@ -358,7 +359,7 @@ func (d *Daemon) Cycle(ctx context.Context) error {
 
 // fail — портал недоступен/вебхук истёк: бар обязан показать ⚠️, молчание запрещено.
 func (d *Daemon) fail(err error) error {
-	snap := state.Snapshot{Error: fmt.Sprintf("%v", err), UpdatedAt: d.now().Format(time.RFC3339)}
+	snap := state.Snapshot{Error: fmt.Sprintf("%v", err), Portal: d.Cfg.Portal, UpdatedAt: d.now().Format(time.RFC3339)}
 	if serr := snap.Save(d.Cfg.SnapshotPath); serr != nil {
 		log.Printf("snapshot(fail): %v", serr)
 	}

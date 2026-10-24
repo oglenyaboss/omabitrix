@@ -2,13 +2,14 @@ package tui
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
 	"time"
 
-	"omabitrix/internal/b24"
+	"github.com/oglenyaboss/omabitrix/internal/b24"
 )
 
 // API — REST-слой TUI поверх b24.Client. Живьём проверенные методы:
@@ -124,6 +125,61 @@ func (a *API) Send(ctx context.Context, dialogID, text string, replyID int64) (i
 	_ = a.ReadDialog(ctx, dialogID, int64(id))
 	a.chatsAt = time.Time{} // сброс кэша списка: превью/счётчик обновятся
 	return int64(id), nil
+}
+
+// FileURL — подписанная ссылка на байты файла (im.v2.File.download;
+// urlDownload из files[] сессионный и без куки отдаёт логин — живая проверка).
+func (a *API) FileURL(ctx context.Context, fileID int64) (string, error) {
+	var raw json.RawMessage
+	if err := a.C.Call(ctx, "im.v2.File.download", map[string]any{"fileId": fileID}, &raw); err != nil {
+		return "", err
+	}
+	var res struct {
+		DownloadURL string `json:"downloadUrl"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return "", err
+	}
+	if res.DownloadURL == "" {
+		return "", errors.New("портал не дал ссылку на файл")
+	}
+	return res.DownloadURL, nil
+}
+
+// UploadFile — im.v2.File.upload: один вызов = загрузка на Диск + вложение
+// + сообщение (живая проверка: работает с вебхуком, content — чистый base64).
+// Возвращает id сообщения и id файла — второй нужен для кэша превью.
+func (a *API) UploadFile(ctx context.Context, dialogID, name string, content []byte, message string) (msgID, fileID int64, err error) {
+	fields := map[string]any{
+		"name":    name,
+		"content": base64.StdEncoding.EncodeToString(content),
+	}
+	if strings.TrimSpace(message) != "" {
+		fields["message"] = message
+	}
+	var raw json.RawMessage
+	if err = a.C.Call(ctx, "im.v2.File.upload", map[string]any{
+		"dialogId": dialogID, "fields": fields,
+	}, &raw); err != nil {
+		return 0, 0, err
+	}
+	var res struct {
+		MessageID FlexInt `json:"messageId"`
+		File      *struct {
+			ID   FlexInt `json:"id"`
+			Size FlexInt `json:"size"`
+		} `json:"file"`
+	}
+	if err = json.Unmarshal(raw, &res); err != nil {
+		return 0, 0, err
+	}
+	msgID, fileID = int64(res.MessageID), 0
+	if res.File != nil {
+		fileID = int64(res.File.ID)
+	}
+	_ = a.ReadDialog(ctx, dialogID, msgID)
+	a.chatsAt = time.Time{} // сброс кэша списка: превью/счётчик обновятся
+	return msgID, fileID, nil
 }
 
 // UpdateMessage правит текст. ПУСТОЙ MESSAGE у портала удалил бы

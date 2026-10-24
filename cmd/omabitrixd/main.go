@@ -12,18 +12,35 @@ import (
 	"syscall"
 	"time"
 
-	"omabitrix/internal/b24"
-	"omabitrix/internal/config"
-	"omabitrix/internal/daemon"
-	"omabitrix/internal/notify"
-	"omabitrix/internal/state"
+	"github.com/oglenyaboss/omabitrix/internal/b24"
+	"github.com/oglenyaboss/omabitrix/internal/config"
+	"github.com/oglenyaboss/omabitrix/internal/daemon"
+	"github.com/oglenyaboss/omabitrix/internal/notify"
+	"github.com/oglenyaboss/omabitrix/internal/setup"
+	"github.com/oglenyaboss/omabitrix/internal/state"
 )
 
 func main() {
 	cfgPath := flag.String("config", config.DefaultPath(), "путь к config.toml")
 	once := flag.Bool("once", false, "один цикл и выход")
 	doctor := flag.Bool("doctor", false, "проверить вебхук и выйти")
+	setupRun := flag.Bool("setup", false, "онбординг: конфиг, systemd-юнит, плагин Omarchy")
+	setupYes := flag.Bool("yes", false, "setup: без вопросов (конфиг должен существовать)")
 	flag.Parse()
+
+	if *setupRun {
+		if err := ensureStdinTTY(*cfgPath); err != nil {
+			log.Fatal(err)
+		}
+		repo := ""
+		if _, err := os.Stat("plugin/" + setup.PluginID); err == nil {
+			repo = "."
+		}
+		if err := setupMode(*cfgPath, *setupYes, repo); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {

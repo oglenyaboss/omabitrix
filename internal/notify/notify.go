@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"omabitrix/internal/rules"
+	"github.com/oglenyaboss/omabitrix/internal/rules"
 )
 
 type Sender interface {

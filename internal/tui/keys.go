@@ -1,16 +1,48 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 )
 
+// expandPath — «~» → домашний каталог в пути прикрепления.
+func expandPath(p string) string {
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, strings.TrimPrefix(p, "~"))
+		}
+	}
+	return p
+}
+
 // keys — единая точка хоткеев. q/esc идут «наружу» по стеку режимов.
 func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// оверлеи перехватывают всё
 	switch m.overlay {
+	case ovImage:
+		// просмотр вложения: прокрутка, enter — системный вьювер
+		switch msg.String() {
+		case "esc", "q":
+			m.overlay = ovNone
+			m.imgMsg = Message{}
+		case "enter":
+			return m.openImageExternal()
+		case "j", "down":
+			m.imgOff++
+		case "k", "up":
+			if m.imgOff > 0 {
+				m.imgOff--
+			}
+		case "pgdown", "f", " ":
+			m.imgOff += 10
+		case "pgup", "b":
+			m.imgOff = max(m.imgOff-10, 0)
+		}
+		return m, nil
 	case ovHelp:
 		m.overlay = ovNone // любая клавиша закрывает
 		return m, nil
@@ -104,6 +136,18 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.vp.PageDown()
 				return m, nil
 			}
+		case "a":
+			// приложить файл к следующей отправке; правку не смешиваем
+			if m.active != nil && m.editID == 0 {
+				m.focus = focusAttach
+				return m, m.attachIn.Focus()
+			}
+		case "ctrl+v":
+			// картинка из буфера обмена (Wayland, wl-paste)
+			if m.active != nil && m.editID == 0 && !m.sending {
+				m.sending = true
+				return m, m.sendClipboardCmd()
+			}
 		}
 		var cmd tea.Cmd
 		m.reply, cmd = m.reply.Update(msg)
@@ -124,7 +168,39 @@ func (m Model) keys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				}
 				return m, m.sendCmd(wire, m.replyTo.ID)
 			}
+			if text == "" && m.attach != "" && m.active != nil && !m.sending {
+				// файл без подписи
+				path := m.attach
+				m.attach = ""
+				m.sending = true
+				return m, m.sendFileCmd(path, "")
+			}
 		}
+		return m, cmd
+	}
+
+	// ввод пути к файлу: enter — приложить, esc — назад в поле ответа
+	if m.focus == focusAttach {
+		switch msg.Code {
+		case tea.KeyEsc:
+			m.focus = focusReply
+			m.attachIn.Blur()
+			return m, m.reply.Focus()
+		case tea.KeyEnter:
+			path := expandPath(strings.TrimSpace(m.attachIn.Value()))
+			m.attachIn.Blur()
+			m.attachIn.SetValue("")
+			m.focus = focusReply
+			if st, err := os.Stat(path); err != nil || st.IsDir() {
+				m.flash = "не нашёл файл: " + path
+				m.flashAt = m.api.now()
+				return m, m.reply.Focus()
+			}
+			m.attach = path
+			return m, m.reply.Focus()
+		}
+		var cmd tea.Cmd
+		m.attachIn, cmd = m.attachIn.Update(msg)
 		return m, cmd
 	}
 
@@ -517,6 +593,10 @@ func (m Model) paste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.searchIn, cmd = m.searchIn.Update(tea.PasteMsg{Content: strings.ReplaceAll(content, "\n", " ")})
 		return m, cmd
+	case focusAttach:
+		var cmd tea.Cmd
+		m.attachIn, cmd = m.attachIn.Update(tea.PasteMsg{Content: strings.ReplaceAll(content, "\n", " ")})
+		return m, cmd
 	}
 	return m, nil
 }
@@ -614,6 +694,9 @@ func (m Model) selKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.mentions[msg0.Name] = msg0.AuthorID
 		m.replyActive()
 		return m, m.reply.Focus()
+	case key.Matches(msg, km.FileOpen):
+		// вложение выделенного сообщения: картинка — оверлей, файл — вьювер
+		return m.openAttach()
 	}
 	return m, nil
 }

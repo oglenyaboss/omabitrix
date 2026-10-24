@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -20,6 +21,8 @@ func (m Model) View() tea.View {
 		}
 	} else if m.overlay == ovHelp {
 		s = m.viewHelp()
+	} else if m.overlay == ovImage {
+		s = m.viewImage()
 	} else {
 		s = m.tabBar() + "\n"
 		switch m.tab {
@@ -130,6 +133,48 @@ func paneTitle(num, name string, extra string, active bool) string {
 
 func (m Model) viewChats() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, m.chatListPane(), "  ", m.dialogPane())
+}
+
+// viewImage — полноэкранный просмотр вложения (ovImage): картинка во всю
+// ширину с прокруткой, файл — карточка; enter — системный вьювер.
+func (m Model) viewImage() string {
+	f, ok := m.imgFirst()
+	if !ok {
+		return stDim.Render(" нет файла")
+	}
+	h := m.height - 6
+	if h < 1 {
+		h = 1
+	}
+	w := m.width - 8
+	if w < 4 {
+		w = 4
+	}
+	head := stTitle.Render(" "+f.Name) + stDim.Render(" · "+humanSize(f.Size)) + "\n\n"
+	var body []string
+	_, cached := cachedPath(f)
+	switch {
+	case !f.IsImage():
+		body = []string{stDim.Render(" enter — скачать и открыть системным вьювером")}
+	default:
+		img := renderImage(f, w, h)
+		switch {
+		case len(img) > 0:
+			max := len(img) - h
+			if max < 0 {
+				max = 0
+			}
+			off := min(m.imgOff, max)
+			end := min(off+h, len(img))
+			body = img[off:end]
+		case cached:
+			body = []string{stDim.Render(" превью недоступно · enter — открыть в системе")}
+		default:
+			body = []string{stDim.Render(" загрузка…")}
+		}
+	}
+	return head + strings.Join(body, "\n") + "\n\n" +
+		stDim.Render(" esc — назад · j/k — скролл · enter — открыть в системе")
 }
 
 func (m Model) unreadTotal() int {
@@ -287,6 +332,9 @@ func (m Model) dialogPane() string {
 	case m.focus == focusReply:
 		// разделитель отделяет поле от истории: «── ответ» или «── правка»
 		lines = append(lines, stAccent.Render(m.replySep()))
+		if m.attach != "" {
+			lines = append(lines, stDim.Render(truncate("📎 "+filepath.Base(m.attach)+" · enter — отправить", m.dialW-4)))
+		}
 		if m.editID == 0 && m.replyTo.ID > 0 {
 			q := m.replyTo
 			name := q.Name
@@ -298,6 +346,8 @@ func (m Model) dialogPane() string {
 		lines = append(lines, strings.Split(m.reply.View(), "\n")...)
 	case m.focus == focusSearch:
 		lines = append(lines, "", m.searchIn.View())
+	case m.focus == focusAttach:
+		lines = append(lines, "", m.attachIn.View())
 	default:
 		if m.taskOpen {
 			// на экране задачи поле ответа видно всегда: без фокуса — приглушённый

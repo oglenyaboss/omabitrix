@@ -10,9 +10,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"omabitrix/internal/b24"
-	"omabitrix/internal/config"
-	"omabitrix/internal/tui"
+	"github.com/oglenyaboss/omabitrix/internal/b24"
+	"github.com/oglenyaboss/omabitrix/internal/config"
+	"github.com/oglenyaboss/omabitrix/internal/tui"
 )
 
 func main() {

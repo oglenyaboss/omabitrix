@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"omabitrix/internal/rules"
+	"github.com/oglenyaboss/omabitrix/internal/rules"
 )
 
 func TestArgs(t *testing.T) {

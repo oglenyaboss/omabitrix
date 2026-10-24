@@ -180,7 +180,7 @@ func ChatsFrom(raw []byte, now time.Time, skew time.Duration) []Chat {
 			c.Title = dlg
 		}
 		if it.Message != nil {
-			c.Preview = StripBB(it.Message.Text)
+			c.Preview = previewText(it.Message.Text)
 			date := ShiftISO(it.Message.Date, skew)
 			c.Time = FmtTime(date, now)
 			if t, err := time.Parse(time.RFC3339, date); err == nil {
@@ -194,6 +194,18 @@ func ChatsFrom(raw []byte, now time.Time, skew time.Duration) []Chat {
 	}
 	sortChats(out)
 	return out
+}
+
+// previewText — превью последнего сообщения: портал шлёт «[Файл]» для
+// вложений, а StripBB выкусывает любую скобку — остаётся пустота.
+func previewText(text string) string {
+	if s := StripBB(text); s != "" {
+		return s
+	}
+	if strings.TrimSpace(text) != "" {
+		return "📎 файл"
+	}
+	return ""
 }
 
 // sortChats — непрочитанные вверх, дальше по свежести (после докладки
@@ -220,6 +232,7 @@ type msgParams struct {
 	IsDeleted bool
 	ReplyID   int64
 	Like      []int64
+	FileIDs   []int64 // FILE_ID: id файлов из files[] того же ответа
 }
 
 // parseMsgParams: params бывает объектом, а бывает пустым массивом []
@@ -233,6 +246,7 @@ func parseMsgParams(raw json.RawMessage) msgParams {
 		IsDeleted string    `json:"IS_DELETED"`
 		ReplyID   FlexInt   `json:"REPLY_ID"`
 		Like      []FlexInt `json:"LIKE"`
+		FileIDs   []FlexInt `json:"FILE_ID"`
 	}
 	if err := json.Unmarshal(raw, &wire); err != nil {
 		return msgParams{}
@@ -241,6 +255,9 @@ func parseMsgParams(raw json.RawMessage) msgParams {
 	p.ReplyID = int64(wire.ReplyID)
 	for _, v := range wire.Like {
 		p.Like = append(p.Like, int64(v))
+	}
+	for _, v := range wire.FileIDs {
+		p.FileIDs = append(p.FileIDs, int64(v))
 	}
 	return p
 }
@@ -257,6 +274,17 @@ func likedByMe(likes []int64, myID int64) bool {
 type rawDialogResult struct {
 	Messages []rawMsg    `json:"messages"`
 	Users    []rawUserV2 `json:"users"`
+	Files    []rawFileV2 `json:"files"` // метаданные вложений (живая проверка)
+}
+
+// rawFileV2 — элемент files[]: type="image" отличает картинку (поле image
+// ненадёжно — false даже у png).
+type rawFileV2 struct {
+	ID        FlexInt `json:"id"`
+	Type      string  `json:"type"`
+	Name      string  `json:"name"`
+	Extension string  `json:"extension"`
+	Size      FlexInt `json:"size"`
 }
 
 type rawUserV2 struct {
@@ -273,6 +301,12 @@ func MessagesFrom(raw []byte, myID int64, now time.Time, skew time.Duration) []M
 	for _, u := range res.Users {
 		users[int64(u.ID)] = u.Name
 	}
+	files := map[int64]Attachment{}
+	for _, f := range res.Files {
+		files[int64(f.ID)] = Attachment{
+			ID: int64(f.ID), Type: f.Type, Name: f.Name, Ext: f.Extension, Size: int64(f.Size),
+		}
+	}
 	now = now.Local()
 	out := make([]Message, 0, len(res.Messages))
 	for _, m := range res.Messages {
@@ -283,7 +317,7 @@ func MessagesFrom(raw []byte, myID int64, now time.Time, skew time.Duration) []M
 		text, mentionsMe := applyMentions(m.Text, myID)
 		date := ShiftISO(m.Date, skew)
 		day, label := DayInfo(date, now)
-		out = append(out, Message{
+		msg := Message{
 			ID:         int64(m.ID),
 			AuthorID:   int64(m.AuthorID),
 			Name:       users[int64(m.AuthorID)],
@@ -297,7 +331,13 @@ func MessagesFrom(raw []byte, myID int64, now time.Time, skew time.Duration) []M
 			Likes:      len(ps.Like),
 			LikedByMe:  likedByMe(ps.Like, myID),
 			MentionsMe: mentionsMe,
-		})
+		}
+		for _, id := range ps.FileIDs {
+			if f, ok := files[id]; ok {
+				msg.Files = append(msg.Files, f)
+			}
+		}
+		out = append(out, msg)
 	}
 	// портал отдаёт от старых к свежим; переворачиваем
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
@@ -317,6 +357,7 @@ type rawSearchMsg struct {
 type rawSearchResult struct {
 	Messages []rawSearchMsg `json:"messages"`
 	Users    []rawUserV2    `json:"users"`
+	Files    []rawFileV2    `json:"files"`
 }
 
 // SearchFrom — im.dialog.messages.search → найденные, как пришли (свежие первыми).
@@ -327,6 +368,12 @@ func SearchFrom(raw []byte, myID int64, now time.Time, skew time.Duration) []Mes
 	for _, u := range res.Users {
 		users[int64(u.ID)] = u.Name
 	}
+	files := map[int64]Attachment{}
+	for _, f := range res.Files {
+		files[int64(f.ID)] = Attachment{
+			ID: int64(f.ID), Type: f.Type, Name: f.Name, Ext: f.Extension, Size: int64(f.Size),
+		}
+	}
 	now = now.Local()
 	out := make([]Message, 0, len(res.Messages))
 	for _, m := range res.Messages {
@@ -334,7 +381,7 @@ func SearchFrom(raw []byte, myID int64, now time.Time, skew time.Duration) []Mes
 		text, mentionsMe := applyMentions(m.Text, myID)
 		date := ShiftISO(m.Date, skew)
 		day, label := DayInfo(date, now)
-		out = append(out, Message{
+		msg := Message{
 			ID:         int64(m.ID),
 			AuthorID:   int64(m.AuthorID),
 			Name:       users[int64(m.AuthorID)],
@@ -348,7 +395,13 @@ func SearchFrom(raw []byte, myID int64, now time.Time, skew time.Duration) []Mes
 			Likes:      len(ps.Like),
 			LikedByMe:  likedByMe(ps.Like, myID),
 			MentionsMe: mentionsMe,
-		})
+		}
+		for _, id := range ps.FileIDs {
+			if f, ok := files[id]; ok {
+				msg.Files = append(msg.Files, f)
+			}
+		}
+		out = append(out, msg)
 	}
 	return out
 }
