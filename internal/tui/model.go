@@ -127,6 +127,7 @@ type Model struct {
 	flash         string
 	flashAt       time.Time
 	toast         *toastInfo // всплывашка «новое сообщение из другого чата»
+	intro         *intro
 
 	pendingChat string
 	pendingTask int64
@@ -177,7 +178,11 @@ func NewModel(api *API, ctx context.Context) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, m.reloadAllCmd(), tick10s(), animTick())
+	cmds := []tea.Cmd{m.spinner.Tick, m.reloadAllCmd(), tick10s(), animTick()}
+	if m.intro != nil {
+		cmds = append(cmds, introTick())
+	}
+	return tea.Batch(cmds...)
 }
 
 type frameMsg struct{}
@@ -234,6 +239,9 @@ type reloadMsg struct {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if _, ok := msg.(tea.MouseMsg); ok && m.intro != nil {
+		return m, nil
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -253,12 +261,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.frame++
 		return m, animTick()
 
+	case introMsg:
+		return m.stepIntro()
+
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
 
 	case reloadMsg:
+		m.introGot(msg)
 		m.ready = true
 		key := m.cursorKey() // до замены списков: курсор вернём на тот же элемент
 		cardKey := ""        // задача открытой карточки — taskIdx следует за курсором
@@ -686,6 +698,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.paste(msg)
 
 	case tea.KeyPressMsg:
+		m.intro = nil
 		if !m.ready {
 			// «любая клавиша — пропустить»: входим с тем, что загрузилось,
 			// клавиша при этом применяется (не теряется)

@@ -13,7 +13,9 @@ import (
 
 func (m Model) View() tea.View {
 	var s string
-	if !m.ready || m.width == 0 {
+	if m.intro != nil && m.width > 0 && m.height > 0 {
+		s = m.viewIntro()
+	} else if !m.ready || m.width == 0 {
 		if m.loadErr != "" {
 			s = SplashErr(m.spinner.View(), m.loadErr)
 		} else {
@@ -24,27 +26,32 @@ func (m Model) View() tea.View {
 	} else if m.overlay == ovImage {
 		s = m.viewImage()
 	} else {
-		s = m.tabBar() + "\n"
-		switch m.tab {
-		case tabHome:
-			s += m.viewHome()
-		case tabChats:
-			s += m.viewChats()
-		case tabTasks:
-			s += m.viewTasks()
-		case tabNotify:
-			s += m.viewNotify()
-		}
-		s += "\n" + m.footer()
-		// тост нового сообщения поверх экрана на любой вкладке
-		if m.toastVisible() && m.width >= 50 && m.height >= 8 {
-			s = m.toastOverlay(s)
-		}
+		s = m.screen()
 	}
 	v := tea.NewView(s)
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
 	return v
+}
+
+func (m Model) screen() string {
+	s := m.tabBar() + "\n"
+	switch m.tab {
+	case tabHome:
+		s += m.viewHome()
+	case tabChats:
+		s += m.viewChats()
+	case tabTasks:
+		s += m.viewTasks()
+	case tabNotify:
+		s += m.viewNotify()
+	}
+	s += "\n" + m.footer()
+	// тост нового сообщения поверх экрана на любой вкладке
+	if m.toastVisible() && m.width >= 50 && m.height >= 8 {
+		s = m.toastOverlay(s)
+	}
+	return s
 }
 
 // tabBar — строка вкладок: активная — акцентной плашкой с хоткеем,

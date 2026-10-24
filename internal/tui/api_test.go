@@ -118,7 +118,7 @@ func TestReadDialogAPI(t *testing.T) {
 
 // Chats — непрочитанные под-чатов коллаба (CHANNEL_COMMENT в im.counters.get)
 // докладываются на строку коллаба: recent.list их в counter не кладёт,
-// и сообщение было бы невидимо в списке (живой кейс portal.example.com).
+// и сообщение было бы невидимо в списке (живой кейс коробки).
 func TestChatsCollabUnreadFromCounters(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -250,7 +250,7 @@ func TestOpenTasksRolesBatch(t *testing.T) {
 			t.Errorf("%s: order: %v", key, q)
 		}
 		// select — отдельные элементы: запятая-строку портал молча игнорирует
-		// и не возвращает newCommentsCount (живой факт portal.example.com)
+		// и не возвращает newCommentsCount (живой факт коробки)
 		if q.Get("select[0]") != "ID" || q.Get("select[6]") != "NEW_COMMENTS_COUNT" {
 			t.Errorf("%s: select: %v", key, q)
 		}

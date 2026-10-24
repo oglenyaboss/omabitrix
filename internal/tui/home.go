@@ -217,7 +217,7 @@ func (m Model) homeChats(innerW int) []string {
 		}
 	}
 	n := len(unread)
-	if lim := m.bodyH - 2 - len(m.homeKanban(innerW)) - 2 - len(m.homeWeek(innerW)) - 2; n > lim {
+	if lim := m.bodyH - 2 - len(m.homeKanban(innerW)) - 2 - len(m.homeWeek(innerW)) - 2; n > max(lim, 1) {
 		n = max(lim, 1)
 	}
 	if n == 0 {

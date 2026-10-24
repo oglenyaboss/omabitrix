@@ -79,7 +79,7 @@ func TestChatsFrom(t *testing.T) {
 
 // Коллаб: строка recent указывает на системный чат, живое сообщение —
 // в под-чате (message.chat_id). Диалог должен открыться в под-чате,
-// иначе вместо переписки — «вступил в проект» (живой кейс portal.example.com).
+// иначе вместо переписки — «вступил в проект» (живой кейс коробки).
 func TestChatsFromCollabSubchat(t *testing.T) {
 	raw := []byte(`{"items":[
 		{"id":"chat127","dialogId":"chat127","chat_id":127,"title":"Команда","counter":0,

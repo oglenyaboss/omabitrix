@@ -150,8 +150,8 @@ func TestChatRowsAvatarAndSelection(t *testing.T) {
 		t.Fatalf("ширина второй строки %d, хочу %d", w, m.listW)
 	}
 	rows2 := m.chatRows(chats[1], false)
-	if s := ansi.Strip(rows2[0]); !strings.Contains(s, " К ") {
-		t.Fatalf("у личного чата нет аватара «К»: %q", s)
+	if s := ansi.Strip(rows2[0]); !strings.Contains(s, " О ") {
+		t.Fatalf("у личного чата нет аватара «О»: %q", s)
 	}
 }
 

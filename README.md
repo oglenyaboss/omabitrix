@@ -1,12 +1,39 @@
-# omabitrix
+<p align="center">
+  <img src="docs/assets/intro.gif" alt="omabitrix: заставка и пульт" width="100%">
+</p>
 
-Компаньон [Bitrix24](https://bitrix24.ru) для рабочего стола (собран под [Omarchy](https://omarchy.org), подойдёт любому Arch + Hyprland): тосты о сообщениях и задачах, счётчики непрочитанных в баре и **TUI-клиент** — чаты, задачи и уведомления прямо в терминале, не выходя из клавиатуры.
+<h1 align="center">omabitrix</h1>
 
-Демон следит за порталом через входящий вебхук (никаких OAuth и серверов), TUI закрывает рутину: ответить в чате, двинуть задачу по канбану, погасить уведомление.
+<p align="center">
+  <b>Bitrix24 в терминале.</b><br>
+  Чаты, канбан задач и уведомления с клавиатуры, без вкладки браузера.<br>
+  Демон шлёт тосты, бар <a href="https://omarchy.org">Omarchy</a> показывает непрочитанное.
+</p>
 
+<p align="center">
+  <a href="https://github.com/oglenyaboss/omabitrix/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/oglenyaboss/omabitrix/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="Go 1.27" src="https://img.shields.io/badge/go-1.27-00ADD8?logo=go&logoColor=white">
+  <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-39d3b6"></a>
+</p>
+
+## Попробовать без портала
+
+Встроенный демо-портал с выдуманной командой — без конфига, вебхука и сети:
+
+```bash
+go run github.com/oglenyaboss/omabitrix/cmd/omabitrix@latest -demo
 ```
-пульт ── задачи (канбан по стадиям) ── чаты (история, картинки, ответы) ── уведы
-```
+
+<p align="center">
+  <img src="docs/assets/tour.gif" alt="тур: канбан, чаты, картинки, уведомления" width="100%">
+</p>
+
+| | |
+|---|---|
+| ![Канбан: перенос карточки по стадиям](docs/assets/board.png) | ![Чат: картинка прямо в истории](docs/assets/chat.png) |
+| ![Картинка во весь экран](docs/assets/image.png) | ![Уведомления с превью](docs/assets/notify.png) |
+
+Компаньон [Bitrix24](https://bitrix24.ru) для рабочего стола: собран под Omarchy, подойдёт любому Arch + Hyprland. Демон следит за порталом через входящий вебхук (никаких OAuth и серверов), TUI закрывает рутину: ответить в чате, двинуть задачу по канбану, погасить уведомление.
 
 ## Возможности
 
@@ -34,8 +61,9 @@ make build
 Осталось руками — глобальный хоткей `SUPER+B` в `~/.config/hypr/bindings.lua`:
 
 ```lua
-bind = { "SUPER", "B", "exec", "foot -a omabitrix omabitrix" }
-windowrule = { "float", "class:^(omabitrix)$" }
+o.bind("SUPER + B", "Bitrix24", o.launch_sole("^omabitrix$", "foot -a omabitrix omabitrix"))
+-- по желанию — плавающим окном:
+o.window("^omabitrix$", { float = true, center = true, size = { 1280, 800 } })
 ```
 
 Без Omarchy демон и TUI работают и так: снапшот пишется в `~/.local/state/omabitrix/snapshot.json`, тосты — через `notify-send`-совместимый `omarchy-notification-send` (подхватывается из PATH).
@@ -45,9 +73,9 @@ windowrule = { "float", "class:^(omabitrix)$" }
 | Кусок | Что делает |
 |---|---|
 | `cmd/omabitrixd` | демон: polling-цикл (`batch` ≤50 команд), тосты с идемпотентностью, снапшот для бара; `-setup` — онбординг, `-doctor` — проверка портала |
-| `cmd/omabitrix` | TUI (bubbletea): вкладки пульт/задачи/чаты/уведы, вложения, ответы, канбан |
+| `cmd/omabitrix` | TUI (bubbletea): вкладки пульт/задачи/чаты/уведы, вложения, ответы, канбан; `-demo` — встроенный фейковый портал |
 | `plugin/lenya.omabitrix` | QML-виджет бара Omarchy: иконка + бейдж непрочитанных |
-| `internal/*` | `b24` (REST-клиент с rate-limit), `rules` (классификация/DND/идемпотентность), `state` (атомарный state+snapshot), `notify`, `daemon`, `setup`, `tui` |
+| `internal/*` | `b24` (REST-клиент с rate-limit), `rules` (классификация/DND/идемпотентность), `state` (атомарный state+snapshot), `notify`, `daemon`, `setup`, `tui`, `demo` (фейковый портал для `-demo`) |
 
 ## Проверка
 
@@ -58,6 +86,8 @@ cat ~/.local/state/omabitrix/snapshot.json
 ```
 
 Тост: чужое личное сообщение, упоминание, комментарий в твоей задаче, дедлайн ≤1 ч, просрочка (раз в сутки). Клик по тосту — карточка или чат. Ночь (DND) — тишина, всё в счётчике. Горячие клавиши TUI — `?` внутри.
+
+Гифки и скриншоты в README пересобираются из демо: `make build && vhs scripts/intro.tape && vhs scripts/tour.tape` (нужны [vhs](https://github.com/charmbracelet/vhs) и ttyd).
 
 Спека и ресёрч: [docs/SPEC.md](docs/SPEC.md) · [docs/research/](docs/research/)
 

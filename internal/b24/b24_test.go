@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// Фикстуры повторяют реальные ответы portal.example.com (гейт №0).
+// Фикстуры повторяют реальные ответы коробочного портала (гейт №0).
 
 const imEventFixture = `{
   "eventId": 1,
@@ -100,7 +100,7 @@ func TestCountersFlexShapes(t *testing.T) {
 	if ct.Messenger.Total != 4 {
 		t.Errorf("messenger: %+v", ct.Messenger)
 	}
-	// комменты коллабов: сумма по под-чатам на родителя (живой кейс portal.example.com)
+	// комменты коллабов: сумма по под-чатам на родителя (живой кейс коробки)
 	if ct.CollabUnread["4659"] != 3 || ct.CollabUnread["13025"] != 1 || len(ct.CollabUnread) != 2 {
 		t.Errorf("collab unread: %+v", ct.CollabUnread)
 	}
@@ -242,7 +242,7 @@ func TestFlexInt(t *testing.T) {
 }
 
 func TestTaskStringFields(t *testing.T) {
-	// реальный формат коробки: числовые поля строками (гейт №0, portal.example.com)
+	// реальный формат коробки: числовые поля строками (гейт №0, живая коробка)
 	c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"result":{"tasks":[{"id":"15617","title":"Просроченная","status":"2","subStatus":"2","deadline":"2026-10-16T18:00:00+05:00","changedDate":"2026-10-15T10:00:00+05:00","createdDate":"2026-10-01T10:00:00+05:00","newCommentsCount":"0","chatId":"10839","group":{"id":"5","name":"SRV"}}],"total":1},"total":1}`)
 	})

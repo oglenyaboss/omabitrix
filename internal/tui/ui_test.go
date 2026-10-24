@@ -80,7 +80,7 @@ func TestDueLabel(t *testing.T) {
 }
 
 func TestAvatar(t *testing.T) {
-	if got := ansi.Strip(avatar("орлова Вера", false, 1)); got != " К " {
+	if got := ansi.Strip(avatar("орлова Вера", false, 1)); got != " О " {
 		t.Errorf("личный: %q", got)
 	}
 	if got := ansi.Strip(avatar("Команда", true, 1)); got != " # " {

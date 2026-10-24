@@ -108,7 +108,7 @@ func (d *Daemon) loc() *time.Location {
 }
 
 // filterLoc — таймзона, в которой портал трактует наивные даты фильтров:
-// серверная (+03 на portal.example.com), НЕ пользовательская (+05)
+// серверная (+03 на проверенной коробке), НЕ пользовательская (+05)
 func (d *Daemon) filterLoc() *time.Location {
 	return d.Client.ServerLoc()
 }
@@ -307,7 +307,7 @@ func (d *Daemon) Cycle(ctx context.Context) error {
 	// 5) снапшот для бара
 	// MESSENGER — весь непрочитанный мессенджер (лички + чаты + комменты
 	// коллабов в CHANNEL_COMMENT); CHAT+DIALOG их не видят (живой факт
-	// portal.example.com: ALL=2 при CHAT=0/DIALOG=0). max — страховка от порталов
+	// коробка: ALL=2 при CHAT=0/DIALOG=0). max — страховка от порталов
 	// без MESSENGER в ответе.
 	chats := counters.TYPE.Messenger.Total
 	if old := counters.TYPE.Chat.Total + counters.TYPE.Dialog.Total; old > chats {

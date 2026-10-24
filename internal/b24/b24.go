@@ -1,5 +1,5 @@
 // Package b24 — тонкий клиент REST Битрикс24 поверх входящего вебхука.
-// Все факты структуры ответов — из гейта №0 на portal.example.com (docs/SPEC.md).
+// Все факты структуры ответов — из гейта №0 на коробочном портале (docs/SPEC.md).
 package b24
 
 import (
@@ -34,7 +34,7 @@ type Client struct {
 	skew   *time.Duration // минимальная оценка: местное время − серверное (time.start)
 }
 
-// ServerLoc — таймзона сервера (проверяется живьём: portal.example.com — сервер +03,
+// ServerLoc — таймзона сервера (проверяется живьём: коробка — сервер +03,
 // задачи приходят в +05 юзера; фильтры >CHANGED_DATE/DEADLINE — в серверской).
 func (c *Client) ServerLoc() *time.Location {
 	c.srvMu.Lock()
@@ -198,7 +198,7 @@ func (m *resultMap) UnmarshalJSON(b []byte) error {
 }
 
 // Batch выполняет до 50 команд одним HTTP-запросом.
-// Коробка понимает только строковую форму команд: cmd[k]="method?param=value" (объектную молча игнорирует — проверено на portal.example.com).
+// Коробка понимает только строковую форму команд: cmd[k]="method?param=value" (объектную молча игнорирует — проверено на живой коробке).
 func (c *Client) Batch(ctx context.Context, cmds map[string]Cmd) (map[string]json.RawMessage, map[string]error, error) {
 	cmd := map[string]string{}
 	for k, v := range cmds {
@@ -444,7 +444,7 @@ type Counters struct {
 }
 
 // CountersResult — весь ответ im.counters.get: CHANNEL_COMMENT лежит рядом
-// с TYPE, не внутри (живой факт portal.example.com) — поэтому свой UnmarshalJSON.
+// с TYPE, не внутри (живой факт коробки) — поэтому свой UnmarshalJSON.
 func (r *CountersResult) UnmarshalJSON(b []byte) error {
 	var wire struct {
 		TYPE           Counters        `json:"TYPE"`
