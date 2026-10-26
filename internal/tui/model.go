@@ -925,50 +925,53 @@ func (m *Model) fetchImagesCmd() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// openAttach — вложение выделенного сообщения: картинка — полноэкранный
-// оверлей (ovImage), остальное — скачать и открыть системным вьювером.
+// openAttach — вложение выделенного сообщения в системном вьювере (enter,
+// клик по превью): оригинал картинки в отдельном окне. Терминальный
+// полноэкранный просмотр — space (openImageOverlay).
 func (m Model) openAttach() (tea.Model, tea.Cmd) {
+	if m.sel < 0 || m.sel >= len(m.history) {
+		return m, nil
+	}
+	files := m.history[m.sel].Files
+	if len(files) == 0 {
+		m.flash = "у сообщения нет вложений"
+		m.flashAt = m.api.now()
+		return m, nil
+	}
+	f := files[0]
+	for _, x := range files {
+		if x.IsImage() {
+			f = x
+			break
+		}
+	}
+	return m.openFileExternal(f)
+}
+
+// openImageOverlay — полноэкранный просмотр вложения в терминале (space):
+// картинка half-blocks, файл — карточка; enter — системный вьювер.
+func (m Model) openImageOverlay() (tea.Model, tea.Cmd) {
 	if m.sel < 0 || m.sel >= len(m.history) {
 		return m, nil
 	}
 	msg := m.history[m.sel]
 	if len(msg.Files) == 0 {
-		m.flash = "у сообщения нет вложений"
-		m.flashAt = m.api.now()
 		return m, nil
 	}
+	m.imgMsg = msg
+	m.imgOff = 0
+	m.overlay = ovImage
 	for _, f := range msg.Files {
 		if !f.IsImage() {
 			continue
 		}
-		m.imgMsg = msg
-		m.imgOff = 0
-		m.overlay = ovImage
 		if _, ok := cachedPath(f); !ok && !m.fileJobs[f.ID] && m.api.C != nil {
 			m.fileJobs[f.ID] = true
 			return m, fetchFileCmd(m.api, f)
 		}
-		return m, nil
+		break
 	}
-	f := msg.Files[0]
-	if m.api.C == nil {
-		m.flash = "файл: нет клиента портала"
-		m.flashAt = m.api.now()
-		return m, nil
-	}
-	if _, ok := cachedPath(f); ok {
-		p, _ := cachedPath(f)
-		m.flash = "открываю " + f.Name
-		m.flashAt = m.api.now()
-		if err := startOpener(p); err != nil {
-			m.flash = "не открылось: " + err.Error()
-		}
-		return m, nil
-	}
-	m.fileJobs[f.ID] = true
-	m.flash = "скачиваю " + f.Name + "…"
-	m.flashAt = m.api.now()
-	return m, openFileCmd(m.api, f)
+	return m, nil
 }
 
 type sentMsg struct {
@@ -1243,7 +1246,7 @@ func (m Model) mouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if msg.Button == tea.MouseLeft {
-		// клик по вложению в панели диалога — как по миниатюре в телеге:
+		// клик по вложению в панели диалога — как enter: системный вьювер;
 		// работает из любого фокуса и вкладки с открытым чатом
 		onDialog := m.tab == tabChats && msg.X > m.listW+4 && m.active != nil ||
 			m.tab == tabTasks && m.taskOpen && msg.X > m.cardW+4 && m.active != nil
@@ -1863,12 +1866,19 @@ func (m Model) imgFirst() (Attachment, bool) {
 	return Attachment{}, false
 }
 
-// openImageExternal — enter в просмотре: оригинал в системном вьювере.
+// openImageExternal — enter в терминальном просмотре: оригинал в системном
+// вьювере.
 func (m Model) openImageExternal() (tea.Model, tea.Cmd) {
 	f, ok := m.imgFirst()
 	if !ok {
 		return m, nil
 	}
+	return m.openFileExternal(f)
+}
+
+// openFileExternal — вложение системным вьювером: из кэша сразу, иначе
+// скачать и открыть (openFileCmd). Без клиента портала не качать.
+func (m Model) openFileExternal(f Attachment) (tea.Model, tea.Cmd) {
 	if p, cached := cachedPath(f); cached {
 		m.flash = "открываю " + f.Name
 		m.flashAt = m.api.now()
@@ -1877,7 +1887,12 @@ func (m Model) openImageExternal() (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if m.api.C == nil || m.fileJobs[f.ID] {
+	if m.api.C == nil {
+		m.flash = "файл: нет клиента портала"
+		m.flashAt = m.api.now()
+		return m, nil
+	}
+	if m.fileJobs[f.ID] {
 		return m, nil
 	}
 	m.fileJobs[f.ID] = true

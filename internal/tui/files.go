@@ -226,7 +226,7 @@ func writeCached(id int64, ext string, content []byte) string {
 	return p
 }
 
-// openFileCmd — скачать в кэш и открыть системным приложением.
+// openFileCmd — скачать в кэш и открыть системным вьювером: итог — fileMsg.
 func openFileCmd(a *API, att Attachment) tea.Cmd {
 	return func() tea.Msg {
 		p, err := ensureFile(context.Background(), a, att)
@@ -255,7 +255,8 @@ func fileTypeName(image bool) string {
 }
 
 // thumbMaxW/thumbMaxH — потолок инлайн-превью в истории: компактно,
-// как миниатюры в телеге; полную картинку открывает enter (ovImage).
+// как миниатюры в телеге; полный размер — enter (системный вьювер)
+// или space (ovImage).
 const (
 	thumbMaxW = 44
 	thumbMaxH = 10

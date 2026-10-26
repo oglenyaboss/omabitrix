@@ -695,8 +695,11 @@ func (m Model) selKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.replyActive()
 		return m, m.reply.Focus()
 	case key.Matches(msg, km.FileOpen):
-		// вложение выделенного сообщения: картинка — оверлей, файл — вьювер
+		// вложение выделенного сообщения — системный вьювер (окно)
 		return m.openAttach()
+	case key.Matches(msg, km.FileView):
+		// то же вложение — полноэкранный просмотр в терминале
+		return m.openImageOverlay()
 	}
 	return m, nil
 }

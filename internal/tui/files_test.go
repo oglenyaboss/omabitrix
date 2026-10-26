@@ -336,8 +336,15 @@ func TestAttachByPath(t *testing.T) {
 	}
 }
 
-// Выделенное сообщение с вложением: enter открывает ovImage, esc закрывает.
+// Выделенное сообщение с картинкой: enter открывает системный вьювер
+// (после скачивания — «скачиваю…»), space — терминальный просмотр, esc закрывает.
 func TestSelOpenImage(t *testing.T) {
+	testCache(t)
+	old := startOpener
+	var got string
+	startOpener = func(p string) error { got = p; return nil }
+	defer func() { startOpener = old }()
+
 	chats := []Chat{{DialogID: "d0", Title: "чат"}}
 	active := chats[0]
 	msgs := []Message{{ID: 1, Name: "А", Text: "смотри",
@@ -345,18 +352,81 @@ func TestSelOpenImage(t *testing.T) {
 	m := viewModel(120, 36, chats, nil, nil, &active, msgs)
 	m.enterSel()
 
+	// не скачано и нет клиента портала — флеш, не тишина
 	mmI, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m1 := mmI.(Model)
-	if m1.overlay != ovImage {
-		t.Fatalf("enter не открыл просмотр: %v", m1.overlay)
+	if m1.overlay != ovNone || m1.flash != "файл: нет клиента портала" {
+		t.Fatalf("enter без клиента: overlay=%v flash=%q", m1.overlay, m1.flash)
 	}
-	v := m1.View().Content
-	if !strings.Contains(v, "p.png") {
+
+	writeCached(5, "png", testPNG(t))
+	mm2I, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m2 := mm2I.(Model)
+	if m2.overlay != ovNone {
+		t.Fatalf("enter открыл оверлей: %v", m2.overlay)
+	}
+	if !strings.HasSuffix(got, "5.png") {
+		t.Fatalf("вьювер не открыт: %q", got)
+	}
+
+	// space — полноэкранный терминальный просмотр
+	mm3I, _ := m.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	m3 := mm3I.(Model)
+	if m3.overlay != ovImage {
+		t.Fatalf("space не открыл просмотр: %v", m3.overlay)
+	}
+	if v := m3.View().Content; !strings.Contains(v, "p.png") {
 		t.Fatal("в просмотре нет имени файла")
 	}
-	mm2, _ := keyPress(m1, "esc")
-	if mm2.overlay != ovNone {
+	mm4, _ := keyPress(m3, "esc")
+	if mm4.overlay != ovNone {
 		t.Fatal("esc не закрыл просмотр")
+	}
+}
+
+// enter по нескачанной картинке с клиентом портала: флеш «скачиваю»,
+// команда скачивает и открывает системный вьювер.
+func TestSelOpenImageDownloads(t *testing.T) {
+	testCache(t)
+	old := startOpener
+	var got string
+	startOpener = func(p string) error { got = p; return nil }
+	defer func() { startOpener = old }()
+
+	pngBytes := testPNG(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/im.v2.File.download.json", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"result":{"downloadUrl":"http://%s/file.bin"}}`, r.Host)
+	})
+	mux.HandleFunc("/file.bin", func(w http.ResponseWriter, r *http.Request) {
+		w.Write(pngBytes)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	chats := []Chat{{DialogID: "d0", Title: "чат"}}
+	active := chats[0]
+	att := Attachment{ID: 9, Type: "image", Name: "t.png", Ext: "png"}
+	msgs := []Message{{ID: 1, Name: "А", Text: "смотри", Files: []Attachment{att}}}
+	m := viewModel(120, 36, chats, nil, nil, &active, msgs)
+	m.api = &API{C: b24.New(srv.URL)}
+	m.enterSel()
+
+	m1, cmd := keyPress(m, "enter")
+	if m1.flash != "скачиваю t.png…" {
+		t.Fatalf("флеш: %q", m1.flash)
+	}
+	if cmd == nil {
+		t.Fatal("нет команды скачивания")
+	}
+	if fm, ok := cmd().(fileMsg); !ok || fm.err != nil {
+		t.Fatalf("итог команды: %T %+v", cmd(), fm)
+	}
+	if !strings.HasSuffix(got, "9.png") {
+		t.Fatalf("вьювер не открыт: %q", got)
+	}
+	if _, cached := cachedPath(att); !cached {
+		t.Fatal("файл не в кэше")
 	}
 }
 
@@ -443,10 +513,15 @@ func TestClipboardFallback(t *testing.T) {
 	}
 }
 
-// Клик мышью по блоку вложения открывает просмотр — из любого фокуса;
-// клик по тексту сообщения — нет.
+// Клик мышью по блоку вложения открывает системный вьювер (как enter) —
+// из любого фокуса; клик по тексту сообщения — нет.
 func TestClickAttachmentOpens(t *testing.T) {
 	testCache(t)
+	old := startOpener
+	var got string
+	startOpener = func(p string) error { got = p; return nil }
+	defer func() { startOpener = old }()
+
 	writeCached(41, "png", testPNG(t))
 	chats := []Chat{{DialogID: "d0", Title: "чат"}}
 	active := chats[0]
@@ -458,15 +533,23 @@ func TestClickAttachmentOpens(t *testing.T) {
 		t.Fatalf("диапазон вложений не записан: %+v", span)
 	}
 	x := m.listW + 10
+	got = ""
 	mmI, _ := m.Update(tea.MouseClickMsg{X: x, Y: 2 + span[0], Button: tea.MouseLeft})
-	if m1 := mmI.(Model); m1.overlay != ovImage {
-		t.Fatalf("клик по вложению не открыл просмотр: %v", m1.overlay)
+	if m1 := mmI.(Model); m1.overlay != ovNone {
+		t.Fatalf("клик открыл оверлей: %v", m1.overlay)
+	}
+	if !strings.HasSuffix(got, "41.png") {
+		t.Fatalf("вьювер не открыт кликом: %q", got)
 	}
 	// тот же клик из поля ответа
+	got = ""
 	m.replyActive()
 	mm2I, _ := m.Update(tea.MouseClickMsg{X: x, Y: 2 + span[0], Button: tea.MouseLeft})
-	if m2 := mm2I.(Model); m2.overlay != ovImage {
-		t.Fatalf("клик из поля ответа не открыл просмотр: %v", m2.overlay)
+	if m2 := mm2I.(Model); m2.overlay != ovNone {
+		t.Fatalf("клик из поля ответа открыл оверлей: %v", m2.overlay)
+	}
+	if !strings.HasSuffix(got, "41.png") {
+		t.Fatalf("клик из поля ответа не открыл вьювер: %q", got)
 	}
 	// клик по строке текста (первая строка блока — имя автора) — ничего
 	mm3I, _ := m.Update(tea.MouseClickMsg{X: x, Y: 2 + m.msgLine[1], Button: tea.MouseLeft})
